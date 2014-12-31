@@ -147,8 +147,8 @@ evalExprType (EApp ident arguments) = do
     else
         throwError $ incompatibleParametersErr ident argTypes actTypes 
 
--- Run after type checking. Throws error if, evaluation 
--- is not possible during compilation.
+-- Expression evaluation is run after type checking.
+-- Throws error if evaluation is not possible during compilation.
 
 evalConstIntExpr :: Expr -> Expr -> (Integer -> Integer -> Integer) -> Bool -> TypeEval ExprVal
 evalConstIntExpr e1 e2 oper checkDivision = do
@@ -187,8 +187,8 @@ evalConstExpr (EMul e1 Times e2) = evalConstIntExpr e1 e2 (*) False
 evalConstExpr (EMul e1 Div e2) = evalConstIntExpr e1 e2 div True
 evalConstExpr (EMul e1 Mod e2) = evalConstIntExpr e1 e2 mod True
 evalConstExpr (EAdd e1 Plus e2) = do
-    t1 <- evalExprType e1
-    case t1 of 
+    exprType <- evalExprType e1
+    case exprType of 
         Int -> evalConstIntExpr e1 e2 (+) False
         Str -> do
             StrVal s1 <- evalConstExpr e1
@@ -303,31 +303,69 @@ declareArgs ((Arg type_ ident):args) = do
     checkIfVarDeclared ident
     local (declareVar ident type_) (declareArgs args)
 
-{-
-evalConstExpr :: Expr -> TypeEval ExprVal
+checkStmtForReturn :: Stmt -> TypeEval Bool
+checkStmtForReturn (Ret _ ) = return True
+checkStmtForReturn VRet = return True
+checkStmtForReturn (BStmt block) = checkBlockForReturn block
+checkStmtForReturn (Cond expr stmt) = do {
+        -- after type checking
+        BoolVal b <- evalConstExpr expr;
+        if b == True then
+            checkStmtForReturn stmt
+        else 
+            return False
+    } `catchError` (\_ -> return False)
+checkStmtForReturn (While expr stmt) = checkStmtForReturn (Cond expr stmt)
+checkStmtForReturn (CondElse expr stmt1 stmt2) = do {
+        -- after type checking
+        BoolVal b <- evalConstExpr expr;
+        if b == True then
+            checkStmtForReturn stmt1
+        else
+            checkStmtForReturn stmt2
+    } `catchError` \_ -> do {
+        retInFirst <- checkStmtForReturn stmt1;
+        retInSecond <- checkStmtForReturn stmt2;
+        return $ retInFirst && retInSecond
+    }
+checkStmtRet _ = return False
 
-checkRet (Block stmts) = do
-    let last = tail stmts
-    case last of 
-        VRet -> return True
-        Ret _ -> return True
-        Bstmt block -> checkRet block
-        if -> do
-            val <- evalConstExpr
-            if val == True then checkStmtRet stmt else throwError
-        if else
-            val <- evalConstExpr `catchError` (\_ -> do checkRetStmt stmt1, stmt2)
-            case val of
-                True -> checkStmtRet stmt1
-                False -> 2
-                _ -> check 1, 2
+checkBlockForReturn :: Block -> TypeEval Bool
+checkBlockForReturn (Block []) = return False
+checkBlockForReturn (Block stmts) = checkStmtForReturn $ last stmts
 
--}
-checkFunction :: TopDef -> TypeEval Env
-checkFunction (FnDef type_ _ args block) = do
+checkBlockForUnreachableCode :: Block -> TypeEval Bool
+checkBlockForUnreachableCode (Block []) = return False
+checkBlockForUnreachableCode (Block (stmt:stmts)) = do
+    isUnreachable <- checkStmtForReturn stmt
+    if isUnreachable then
+        return True
+    else
+        checkBlockForUnreachableCode (Block stmts)
+
+checkFunForReturn :: TopDef -> TypeEval ()
+checkFunForReturn (FnDef _ ident _ block) = do
+    isReturn <- checkBlockForReturn block
+    if not isReturn then
+        throwError $ printf "No \"return\" instruction in function %s" (name ident)
+    else
+        return ()
+
+checkFunForUnreachableCode :: TopDef -> TypeEval ()
+checkFunForUnreachableCode (FnDef _ ident _ block) = do
+    isUnreachable <- checkBlockForUnreachableCode block
+    if isUnreachable then
+        throwError $ printf "Unreachable code in function %s" (name ident)
+    else
+        return ()
+
+checkFunction :: TopDef -> TypeEval ()
+checkFunction fun@(FnDef type_ _ args block) = do
     env <- declareArgs args
     let env' = prepareBlockCheck env
     local (\_ -> env') (checkBlock block)
+    checkFunForReturn fun
+    checkFunForUnreachableCode fun
     where
         prepareBlockCheck :: Env -> Env
         prepareBlockCheck env = Env {
