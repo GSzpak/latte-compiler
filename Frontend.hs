@@ -37,6 +37,19 @@ data Env = Env {
 }
 type TypeEval a = ReaderT Env (ErrorT String IO) a
 
+data ExprVal = IntVal Integer | BoolVal Bool | StrVal String
+
+instance Eq ExprVal where
+    (IntVal n1) == (IntVal n2) = (n1 == n2)
+    (BoolVal b1) == (BoolVal b2) = (b1 == b2)
+    (StrVal s1) == (StrVal s2) = (s1 == s2)
+    _ == _ = False
+
+instance Ord ExprVal where
+    (IntVal n1) <= (IntVal n2) = (n1 <= n2)
+    (BoolVal b1) <= (BoolVal b2) = (b1 <= b2)
+    (StrVal s1) <= (StrVal s2) = (s1 <= s2)
+
 
 runTypeEval :: Env -> TypeEval a -> IO (Either String a)
 runTypeEval env eval = runErrorT (runReaderT eval env)
@@ -77,6 +90,9 @@ duplicatedVariableErr ident = printf "Duplicated variable declaration: %s" (name
 
 duplicatedFunErr :: Ident -> String
 duplicatedFunErr ident = printf "Duplicated function declaration: %s" (name ident)
+
+evaluationNotPossible :: String
+evaluationNotPossible = "Expression evaluation during compilation not possible"
 
 getIdentType :: Typable a => Ident -> (Env -> TypeEnv a) -> String -> TypeEval Type
 getIdentType ident envSelector errMessage = do
@@ -130,6 +146,63 @@ evalExprType (EApp ident arguments) = do
         return type_
     else
         throwError $ incompatibleParametersErr ident argTypes actTypes 
+
+-- Run after type checking. Throws error if, evaluation 
+-- is not possible during compilation.
+
+evalConstIntExpr :: Expr -> Expr -> (Integer -> Integer -> Integer) -> Bool -> TypeEval ExprVal
+evalConstIntExpr e1 e2 oper checkDivision = do
+    IntVal n1 <- evalConstExpr e1
+    IntVal n2 <- evalConstExpr e2
+    if checkDivision && n2 == 0 then
+        throwError evaluationNotPossible
+    else
+        return $ IntVal $ oper n1 n2
+
+evalConstBoolExpr :: Expr -> Expr -> (Bool -> Bool -> Bool) -> TypeEval ExprVal
+evalConstBoolExpr e1 e2 oper = do
+    BoolVal b1 <- evalConstExpr e1
+    BoolVal b2 <- evalConstExpr e2
+    return $ BoolVal $ oper b1 b2
+
+evalCompareExpr :: Expr -> Expr -> (ExprVal -> ExprVal -> Bool) -> TypeEval ExprVal
+evalCompareExpr e1 e2 oper = do
+    val1 <- evalConstExpr e1
+    val2 <- evalConstExpr e2
+    return $ BoolVal $ oper val1 val2
+
+evalConstExpr :: Expr -> TypeEval ExprVal
+evalConstExpr (EVar ident) = throwError evaluationNotPossible
+evalConstExpr (ELitInt n) = return (IntVal n)
+evalConstExpr ELitTrue = return (BoolVal True)
+evalConstExpr ELitFalse = return (BoolVal False)
+evalConstExpr (EString s) = return (StrVal s)
+evalConstExpr (Not expr) = do
+    BoolVal b <- evalConstExpr expr
+    return $ BoolVal $ not b
+evalConstExpr (Neg expr) = do
+    IntVal n <- evalConstExpr expr
+    return $ IntVal $ -n
+evalConstExpr (EMul e1 Times e2) = evalConstIntExpr e1 e2 (*) False
+evalConstExpr (EMul e1 Div e2) = evalConstIntExpr e1 e2 div True
+evalConstExpr (EMul e1 Mod e2) = evalConstIntExpr e1 e2 mod True
+evalConstExpr (EAdd e1 Plus e2) = do
+    t1 <- evalExprType e1
+    case t1 of 
+        Int -> evalConstIntExpr e1 e2 (+) False
+        Str -> do
+            StrVal s1 <- evalConstExpr e1
+            StrVal s2 <- evalConstExpr e2
+            return $ StrVal $ s1 ++ s2
+evalConstExpr (EAdd e1 Minus e2) = evalConstIntExpr e1 e2 (-) False
+evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (&&)
+evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (||)
+evalConstExpr (ERel e1 LTH e2) = evalCompareExpr e1 e2 (<)
+evalConstExpr (ERel e1 LE e2) = evalCompareExpr e1 e2 (<=)
+evalConstExpr (ERel e1 GTH e2) = evalCompareExpr e1 e2 (>)
+evalConstExpr (ERel e1 GE e2) = evalCompareExpr e1 e2 (>=)
+evalConstExpr (ERel e1 EQU e2) = evalCompareExpr e1 e2 (==)
+evalConstExpr (ERel e1 NE e2) = evalCompareExpr e1 e2 (/=)
 
 checkIfVarDeclared :: Ident -> TypeEval ()
 checkIfVarDeclared ident = do
