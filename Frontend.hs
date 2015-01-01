@@ -364,8 +364,8 @@ checkFunction fun@(FnDef type_ _ args block) = do
     env <- declareArgs args
     let env' = prepareBlockCheck env
     local (\_ -> env') (checkBlock block)
-    checkFunForReturn fun
     checkFunForUnreachableCode fun
+    checkFunForReturn fun
     where
         prepareBlockCheck :: Env -> Env
         prepareBlockCheck env = Env {
@@ -402,6 +402,7 @@ declareFunctions ((FnDef type_ ident args _):defs) = do
         }
 
 -- TODO: add declared
+-- TODO: check main
 
 checkProgram :: Program -> TypeEval ()
 checkProgram (Program topDefinitions) = do
