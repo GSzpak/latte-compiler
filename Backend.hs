@@ -12,17 +12,18 @@ import Text.Printf
 type Name = String
 type Registry = Name
 type Counter = Integer
+type Label = String
+type LabelNum = Integer
 
 data ExpValRepr =
     RegVal Name |
     NumVal Integer |
     BoolVal Bool |
-    StrVal String
+
 instance Show ExpValRepr where
     show (RegVal name) = name
     show (NumVal n) = show n
     show (BoolVal b) = show b
-    show (StrVal s) = s
 
 data ExpVal = ExpVal {
     repr :: ExpValRepr,
@@ -36,11 +37,21 @@ data Instruction =
     Load Type Registry |
     Call Type Name [ExpVal] |
     Store ExpVal Registry |
-    Alloca Type
+    Alloca Type |
+    VoidRet |
+    ExpRet ExpVal |
+    Jump ExpVal Label Label
     
 data LLVmInstr = 
     WithResult Registry Instruction |
     WithoutResult Instruction
+
+data LLVMBlock = LLVMBlock {
+    label :: Label,
+    instructions :: [LLVmInstr],
+    predecessors :: [LabelNum],
+    successors :: [LabelNum]
+}
 
 data EnvElem = EnvElem {
     name :: Name,
@@ -53,7 +64,8 @@ data Environment = Environment {
     funEnv :: Env
 }
 data Store = Store {
-    revInstructions :: [LLVmInstr],
+    blocks :: Map.Map LabelNum LLVMBlock,
+    actInstructions :: [LLVmInstr],
     regCounter :: Counter,
     constCounter :: Counter,
     labelCounter :: Counter,
@@ -76,8 +88,12 @@ getNextRegistry = do
     store <- get
     let actRegNum = regCounter store
     put $ Store {
-        revInstructions = revInstructions store
+        blocks = blocks store
+        actInstructions = actInstructions store
         regCounter = actRegNum + 1
+        constCounter = constCounter store
+        labelCounter = labelCounter store
+        strConstants = strConstants store
     }
     return $ getRegistry actRegNum
 
@@ -85,8 +101,12 @@ addInstructions :: [LLVmInstr] -> Eval ()
 addInstructions instrs = do
     store <- get
     put $ Store {
-        revInstructions = instrs ++ (revInstructions store)
-        regCounter = regCounter store
+        blocks = blocks store
+        actInstructions = instrs ++ (actInstructions store)
+        regCounter = actRegNum + 1
+        constCounter = constCounter store
+        labelCounter = labelCounter store
+        strConstants = strConstants store
     }
 
 addInstruction :: LLVmInstr -> Eval ()
@@ -150,14 +170,23 @@ emitExpr expr = do
     addInstruction $ WithResult result instr
     return $ ExpVal {repr = Reg result, type_ = t}
 
-emitStmtInstr :: Stmt -> Eval (Env, [LLVmInstr])
-emitStmtInstr (Ass ident expr) = do
+emitDeclarations :: Type -> [Item] -> [LLVmInstr] -> Eval (Env, [LLVmInstr])
+emitDeclarations type_ [] accu = do
     env <- ask
-    val <- emitExpr expr
-    Just reg t = Map.lookup ident (varEnv env)
-    let instr = Store val reg
-    return $ (env, [WithoutResult instr])
-emitStmtInstr (Decl type_ items) = emitDeclarations items []
+    return (env, accu)
+emitDeclarations type_ (item:items) accu = case item of
+    Init ident expr -> (do
+        val <- emitExpr expr
+        (env, updatedAccu) <- declareItem ident val accu
+        local (\_ -> env) (emitDeclarations type_ items updatedAccu)
+    NoInit ident -> do
+        emptyStrReg <- getEmptyStrReg
+        let val = (case type_ of
+            Int -> ExpVal {repr = NumVal 0, type_ = Int}
+            Bool -> ExpVal {repr = BoolVal False, type_ = Bool}
+            Str -> ExpVal {repr = RegVal emptyStrReg, type_ = Str})
+        (env, updatedAccu) <- declareItem ident val accu
+        local (\_ -> env) (emitDeclarations type_ items updatedAccu)
     where
         declareItem :: Ident -> ExpVal -> [LLVmInstr] -> Eval (Env, [LLVmInstr])
         declareItem ident val accu = do
@@ -167,35 +196,45 @@ emitStmtInstr (Decl type_ items) = emitDeclarations items []
                 varEnv = Map.insert ident reg (varEnv env)
                 procEnv = procEnv env
             }
-            let alloca = WithResult reg (Alloca type_)
+            let alloca = WithResult reg (Alloca (type_ val))
             let store = WithoutResult $ Store val reg
             return (env, (store:(alloca:accu))
-        
-        declareItems :: Ident -> ExpVal -> [Item] -> [LLVmInstr] -> Eval (Env, [LLVmInstr])
-        declareItems ident val items accu = do
-            (env, updatedAccu) <- declareItem ident val accu
-            local (\_ -> env) (emitDeclarations items updatedAccu)
-        
-        emitDeclarations :: [Item] -> [LLVmInstr] -> Eval (Env, [LLVmInstr])
-        emitDeclarations [] accu = return accu
-        emitDeclarations (item:items) = case item of
-            Init ident expr -> (do
-                val <- emitExpr expr
-                declareItems ident val items accu
-            NoInit ident -> do
-                emptyStrReg <- getEmptyStrReg
-                let val = (case type_ of
-                    Int -> ExpVal {repr = NumVal 0, type_ = Int}
-                    Bool -> ExpVal {repr = BoolVal False, type_ = Bool}
-                    Str -> ExpVal {repr = RegVal emptyStrReg, type_ = Str})
-                declareItems ident val items accu
-emitStmtInstr (Incr ident) = 
-    emitExpr (EVar ident)
 
 emitStmt :: Stmt -> Eval Env
 emitStmt Empty = return ()
 emitStmt (BStmt block) = emitBlock block
 emitStmt (Ass ident expr) = do
-    instr 
-    registry <- getNextRegistry
-    
+    env <- ask
+    val <- emitExpr expr
+    Just reg t = Map.lookup ident (varEnv env)
+    addInstruction $ WithoutResult $ Store val reg
+    ask
+emitStmt (Decl type_ items) = do
+    (env, instructions) <- emitDeclarations type_ items []
+    addInstructions instructions
+    return env
+emitStmt (Incr ident) =
+    emitStmt $ EAss ident (EAdd (EVar ident) Plus (ELitInt 1))
+emitStmt (Decr ident) =
+    emitStmtInstr $ EAss ident (EAdd (EVar ident) Minus (ELitInt 1))
+emitStmt (Ret expr) = do
+    val <- emitExpr
+    addInstruction $ WithoutResult $ ExprRet val
+    ask
+emitStmt VRet = do
+    addInstruction $ WithoutResult VoidRet
+    ask
+emitStmt (Cond expr stmt) = do
+    val <- emitExpr expr
+
+
+emitStmts :: [Stmt] -> Eval Env
+emitStmts [] = ask
+emitStmts (stmt:stmts) = do
+    env <- emitStmt stmt
+    local (\_ -> env) (emitStmts stmts)
+
+emitBlock :: Block -> Eval Env
+emitBlock (Block stmts) = do
+    addNewLLVMBlock
+    emitStmts stmts
