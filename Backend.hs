@@ -33,23 +33,19 @@ data BinOp = Add | Sub | Mul | Div | Mod
 data Instruction =
     BinOpExpr Registry BinOp ExpVal ExpVal |
     RelOpExpr Registry RelOp ExpVal ExpVal |
-    NotExpr ExpVal |
-    Concat Registry Registry |
-    Load Type Registry |
-    Call Type Name [ExpVal] |
+    NotExpr Registry ExpVal |
+    Concat Registry Registry Registry |
+    Load Registry Type Registry |
+    Call Registry Type Name [ExpVal] |
     Store ExpVal Registry |
-    Alloca Type |
+    Alloca Registry Type |
     VoidRet |
     ExpRet ExpVal |
     Jump ExpVal Label Label
     
-data LLVmInstr = 
-    WithResult Registry Instruction |
-    WithoutResult Instruction
-
 data LLVMBlock = LLVMBlock {
     label :: Label,
-    instructions :: [LLVmInstr],
+    instructions :: [Instruction],
     predecessors :: [LabelNum],
     successors :: [LabelNum]
 }
@@ -58,7 +54,6 @@ data EnvElem = EnvElem {
     name :: Name,
     type_ :: Type
 }
-
 type Env = Map.Map Ident EnvElem
 data Environment = Environment {
     varEnv :: Env,
@@ -98,7 +93,7 @@ getNextRegistry = do
     }
     return $ getRegistry actRegNum
 
-addInstructions :: [LLVmInstr] -> Eval ()
+addInstructions :: [Instruction] -> Eval ()
 addInstructions instrs = do
     store <- get
     put $ Store {
@@ -110,27 +105,27 @@ addInstructions instrs = do
         strConstants = strConstants store
     }
 
-addInstruction :: LLVmInstr -> Eval ()
+addInstruction :: Instruction -> Eval ()
 addInstruction instr = addInstructions [instr]
 
-emitBinOpInstruction :: Expr -> Expr -> BinOp -> Eval (Type, Instruction)
-emitBinOpInstruction e1 e2 Add = do
+emitBinOpInstruction :: Expr -> Expr -> BinOp -> Registry -> Eval (Type, Instruction)
+emitBinOpInstruction e1 e2 Add resultReg = do
     val1 <- emitExpr e1
     val2 <- emitExpr e2
     -- after type checking
     case type_ val1 of
-        Int -> return (Int, BinOpExpr Add val1 val2)
-        Str -> return (Str, Concat (reg val1) (reg val2))
-emitBinOpInstruction e1 e2 operator = do
+        Int -> return (Int, BinOpExpr resultReg Add val1 val2)
+        Str -> return (Str, Concat resultReg (reg val1) (reg val2))
+emitBinOpInstruction e1 e2 operator resultReg = do
     val1 <- emitExpr e1
     val2 <- emitExpr e2
-    return (Int, BinOpExpr operator e1 e2)
+    return (Int, BinOpExpr resultReg operator e1 e2)
 
-emitRelOpInstruction :: Expr -> Expr -> RelOp -> Eval (Type, Instruction)
-emitRelOpInstruction e1 e2 RelOp = do
+emitRelOpInstruction :: Expr -> Expr -> RelOp -> Registry -> Eval (Type, Instruction)
+emitRelOpInstruction e1 e2 RelOp resultReg = do
     val1 <- emitExpr e1
     val2 <- emitExpr e2
-    return (Bool, RelOpExpr RelOp val1 val2)
+    return (Bool, RelOpExpr resultReg RelOp val1 val2)
 
 negate :: Expr -> Expr
 negate ELitTrue = ELitFalse
@@ -143,33 +138,45 @@ negate (ERel e1 GTH e2) = ERel e1 LE e2
 negate (ERel e1 EQU e2) = ERel e1 NE e2
 negate (ERel e1 NE e2) = ERel e1 EQU e2
 
-emitExprInstruction :: Expr -> Eval (Type, Instruction)
-emitExprInstruction (EVar ident) = do
+emitExprInstruction :: Expr -> Registry -> Eval (Type, Instruction)
+emitExprInstruction (EVar ident) resultReg = do
     env <- ask
     let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
-    let instr = Load t reg
+    let instr = Load resultReg t reg
     return (t, instr)
-emitExprInstruction (EApp ident args) = do
+emitExprInstruction (EApp ident args) resultReg = do
     env <- ask
     let Just (EnvElem name t) = Map.lookup ident (funEnv env)
     argReprs <- mapM emitExpr args
-    let instr = Call t name argReprs
+    let instr = Call resultReg t name argReprs
     return (t, instr)
-emitExprInstruction (Neg expr) = emitExprInstruction (EAdd (ELitInt 0) Minus expr)
-emitExprInstruction (Not expr) = do
+emitExprInstruction (Neg expr) resultReg =
+    emitExprInstruction (EAdd (ELitInt 0) Minus expr) resultReg
+emitExprInstruction (Not expr) resultReg = do
     val <- emitExpr expr
-    return (Bool, NotExpr val)
-emitExprInstruction (EMul expr1 Times expr2) = emitBinOpInstruction expr1 expr2 Mul
-emitExprInstruction (EMul expr1 Div expr2) = emitBinOpInstruction expr1 expr2 Div
-emitExprInstruction (EMul expr1 Mod expr2) = emitBinOpInstruction expr1 expr2 Mod
-emitExprInstruction (EAdd expr1 Plus expr2) = emitBinOpInstruction expr1 expr2 Add
-emitExprInstruction (EAdd expr1 Minus expr2) = emitBinOpInstruction expr1 expr2 Sub
-emitExprInstruction (ERel expr1 LTH expr2) = emitRelOpInstruction expr1 expr2 LTH
-emitExprInstruction (ERel expr1 LE expr2) = emitRelOpInstruction expr1 expr2 LE
-emitExprInstruction (ERel expr1 GTH expr2) = emitRelOpInstruction expr1 expr2 GTH
-emitExprInstruction (ERel expr1 GE expr2) = emitRelOpInstruction expr1 expr2 GE
-emitExprInstruction (ERel expr1 EQU expr2) = emitRelOpInstruction expr1 expr2 EQU
-emitExprInstruction (ERel expr1 NE expr2) = emitRelOpInstruction expr1 expr2 NE
+    return (Bool, NotExpr resultReg val)
+emitExprInstruction (EMul expr1 Times expr2) resultReg =
+    emitBinOpInstruction expr1 expr2 Mul
+emitExprInstruction (EMul expr1 Div expr2) resultReg =
+    emitBinOpInstruction expr1 expr2 Div resultReg
+emitExprInstruction (EMul expr1 Mod expr2) resultReg =
+    emitBinOpInstruction expr1 expr2 Mod resultReg
+emitExprInstruction (EAdd expr1 Plus expr2) resultReg =
+    emitBinOpInstruction expr1 expr2 Add resultReg
+emitExprInstruction (EAdd expr1 Minus expr2) resultReg =
+    emitBinOpInstruction expr1 expr2 Sub resultReg
+emitExprInstruction (ERel expr1 LTH expr2) resultReg =
+    emitRelOpInstruction expr1 expr2 LTH resultReg
+emitExprInstruction (ERel expr1 LE expr2) resultReg =
+    emitRelOpInstruction expr1 expr2 LE resultReg
+emitExprInstruction (ERel expr1 GTH expr2) resultReg =
+    emitRelOpInstruction expr1 expr2 GTH resultReg
+emitExprInstruction (ERel expr1 GE expr2) resultReg =
+    emitRelOpInstruction expr1 expr2 GE resultReg
+emitExprInstruction (ERel expr1 EQU expr2) resultReg =
+    emitRelOpInstruction expr1 expr2 EQU resultReg
+emitExprInstruction (ERel expr1 NE expr2) resultReg =
+    emitRelOpInstruction expr1 expr2 NE resultReg
 emitExprInstruction (EAnd expr1 expr2) = do
     val1 <- emitExpr $ negate expr1
     numFalse <- addNewLLVMBlock
@@ -183,8 +190,8 @@ emitExpr ELitFalse = return $ ExpVal {repr = BoolVal False, type_ = Bool}
 -- TODO: EString
 emitExpr expr = do
     result <- getNextRegistry
-    (t, instr) <- emitExprInstruction expr
-    addInstruction $ WithResult result instr
+    (t, instr) <- emitExprInstruction expr result
+    addInstruction instr
     return $ ExpVal {repr = Reg result, type_ = t}
 
 emitDeclarations :: Type -> [Item] -> [LLVmInstr] -> Eval (Env, [LLVmInstr])
