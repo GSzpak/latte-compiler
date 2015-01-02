@@ -31,8 +31,9 @@ data ExpVal = ExpVal {
 }
 data BinOp = Add | Sub | Mul | Div | Mod
 data Instruction =
-    BinOpExpr BinOp ExpVal ExpVal |
-    RelOpExpr RelOp ExpVal ExpVal |
+    BinOpExpr Registry BinOp ExpVal ExpVal |
+    RelOpExpr Registry RelOp ExpVal ExpVal |
+    NotExpr ExpVal |
     Concat Registry Registry |
     Load Type Registry |
     Call Type Name [ExpVal] |
@@ -131,6 +132,17 @@ emitRelOpInstruction e1 e2 RelOp = do
     val2 <- emitExpr e2
     return (Bool, RelOpExpr RelOp val1 val2)
 
+negate :: Expr -> Expr
+negate ELitTrue = ELitFalse
+negate ELitFalse = ELitTrue
+negate (EAnd e1 e2) = EOr (negate e1) (negate e2)
+negate (EOr e1 e2) = EAnd (negate e1) (negate e2)
+negate (ERel e1 LTH e2) = ERel e1 GE e2
+negate (ERel e1 LE e2) = ERel e1 GTH e2
+negate (ERel e1 GTH e2) = ERel e1 LE e2
+negate (ERel e1 EQU e2) = ERel e1 NE e2
+negate (ERel e1 NE e2) = ERel e1 EQU e2
+
 emitExprInstruction :: Expr -> Eval (Type, Instruction)
 emitExprInstruction (EVar ident) = do
     env <- ask
@@ -144,7 +156,9 @@ emitExprInstruction (EApp ident args) = do
     let instr = Call t name argReprs
     return (t, instr)
 emitExprInstruction (Neg expr) = emitExprInstruction (EAdd (ELitInt 0) Minus expr)
--- TODO: not
+emitExprInstruction (Not expr) = do
+    val <- emitExpr expr
+    return (Bool, NotExpr val)
 emitExprInstruction (EMul expr1 Times expr2) = emitBinOpInstruction expr1 expr2 Mul
 emitExprInstruction (EMul expr1 Div expr2) = emitBinOpInstruction expr1 expr2 Div
 emitExprInstruction (EMul expr1 Mod expr2) = emitBinOpInstruction expr1 expr2 Mod
@@ -156,8 +170,11 @@ emitExprInstruction (ERel expr1 GTH expr2) = emitRelOpInstruction expr1 expr2 GT
 emitExprInstruction (ERel expr1 GE expr2) = emitRelOpInstruction expr1 expr2 GE
 emitExprInstruction (ERel expr1 EQU expr2) = emitRelOpInstruction expr1 expr2 EQU
 emitExprInstruction (ERel expr1 NE expr2) = emitRelOpInstruction expr1 expr2 NE
--- TODO: and, or
-emitExprInstruction (EAnd expr1 expr2)
+emitExprInstruction (EAnd expr1 expr2) = do
+    val1 <- emitExpr $ negate expr1
+    numFalse <- addNewLLVMBlock
+    numTrue <- addNewLLVMBlock 
+    addInstruction $ WithoutResult $ Jump (label numTrue) (label numFalse)
 
 emitExpr :: Expr -> Eval ExpVal
 emitExpr (ELitInt n) = return $ ExpVal {repr = NumVal n, type_ = Int}
