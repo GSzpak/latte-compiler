@@ -41,7 +41,9 @@ data Instruction =
     Alloca Registry Type |
     VoidRet |
     ExpRet ExpVal |
-    Jump ExpVal Label Label
+    CondJump ExpVal LabelNum LabelNum |
+    Jump LabelNum |
+    Phi Registry [ExpVal, LabelNum]
     
 data LLVMBlock = LLVMBlock {
     label :: Label,
@@ -78,6 +80,24 @@ getRegistry regNum = "%r" ++ (show regNum)
 
 globalName :: ident -> Name
 globalName ident = '@':(name ident)
+
+numExpVal :: Integer -> ExpVal
+numExpVal n = ExpVal {
+    repr = NumVal n,
+    type_ = Int
+}
+
+boolExpVal :: Bool -> ExpVal
+boolExpVal b = ExpVal {
+    repr = BoolVal b,
+    type_ = Bool
+}
+
+trueExpVal :: ExpVal
+trueExpVal = boolExpVal True
+
+falseExpVal :: ExpVal
+falseExpVal = boolExpVal False
 
 getNextRegistry :: Eval Registry
 getNextRegistry = do
@@ -177,21 +197,36 @@ emitExprInstruction (ERel expr1 EQU expr2) resultReg =
     emitRelOpInstruction expr1 expr2 EQU resultReg
 emitExprInstruction (ERel expr1 NE expr2) resultReg =
     emitRelOpInstruction expr1 expr2 NE resultReg
-emitExprInstruction (EAnd expr1 expr2) = do
-    val1 <- emitExpr $ negate expr1
-    numFalse <- addNewLLVMBlock
-    numTrue <- addNewLLVMBlock 
-    addInstruction $ WithoutResult $ Jump (label numTrue) (label numFalse)
 
-emitExpr :: Expr -> Eval ExpVal
-emitExpr (ELitInt n) = return $ ExpVal {repr = NumVal n, type_ = Int}
-emitExpr ELitTrue = return $ ExpVal {repr = BoolVal True, type_ = Bool}
-emitExpr ELitFalse = return $ ExpVal {repr = BoolVal False, type_ = Bool}
+emitExpr :: Expr -> LabelNum -> Eval ExpVal
+emitExpr (ELitInt n) _ = return $ numExpVal n
+emitExpr ELitTrue _ = return $ boolExpVal True
+emitExpr ELitFalse _ = return $ boolExpVal False
 -- TODO: EString
-emitExpr expr = do
+emitExpr (EAnd expr1 expr2) labelNum = do
+    val1 <- emitExpr expr1 labelNum
+    numTrue <- addNewLLVMBlock
+    val2 <- emitExpr expr2 numTrue
+    numNext <- addNewLLVMBlock
+    addInstruction (CondJump val1 numTrue numNext) labelNum
+    addInstruction (Jump val2 numNext) numTrue
+    resultReg <- getNextRegistry
+    addInstruction (Phi resultReg [(falseExpVal, labelNum), (val2, numTrue)]) numNext
+    return $ ExpVal {repr = Reg resultReg, type_ = Bool}
+emitExpr (EOr expr1 expr2) labelNum = do
+    val1 <- emitExpr expr1 labelNum
+    numFalse <- addNewLLVMBlock
+    val2 <- emitExpr expr2 numFalse
+    numNext <- addNewLLVMBlock
+    addInstruction (CondJump val1 numNext numFalse) labelNum
+    addInstruction (Jump val2 numNext) numFalse
+    resultReg <- getNextRegistry
+    addInstruction (Phi resultReg [(trueExpVal, labelNum), (val2, numFalse)]) numNext
+    return $ ExpVal {repr = Reg resultReg, type_ = Bool}
+emitExpr expr labelNum = do
     result <- getNextRegistry
     (t, instr) <- emitExprInstruction expr result
-    addInstruction instr
+    addInstruction instr labelNum
     return $ ExpVal {repr = Reg result, type_ = t}
 
 emitDeclarations :: Type -> [Item] -> [LLVmInstr] -> Eval (Env, [LLVmInstr])
