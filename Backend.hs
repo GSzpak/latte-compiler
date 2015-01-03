@@ -58,14 +58,6 @@ data Instruction =
     Jump LabelNum |
     Phi Registry Type [(ExpVal, LabelNum)]
 
-instance Show RelOp where
-    show LTH = "slt"
-    show LE = "sle"
-    show GTH = "sgt"
-    show GE = "sge"
-    show EQU = "eq"
-    show NE = "ne"
-
 instance Show Instruction where
     show (BinOpExpr result binop val1 val2) =
         let
@@ -80,7 +72,7 @@ instance Show Instruction where
             val1Repr = show $ repr val1
             val2Repr = show $ repr val2
         in
-            printf "%s = icmp %s %s %s, %s" result (show relop) typeRepr val1Repr val2Repr
+            printf "%s = icmp %s %s %s, %s" result (showLLVMRelOp relop) typeRepr val1Repr val2Repr
     show (NotExpr result val) =
         printf "%s = xor i1 %s, true" result (show $ repr val)
     show (Load result type_ reg) = 
@@ -114,6 +106,7 @@ data Environment = Environment {
     varEnv :: Env,
     funEnv :: Env
 }
+
 data Store = Store {
     blocks :: Map.Map LabelNum LLVMBlock,
     actBlockNum :: labelNum
@@ -137,6 +130,14 @@ globalName ident = '@':(name ident)
 
 label :: LabelNum -> Label
 label num = printf "label%s" (show num)
+
+showLLVMRelOp :: RelOp -> String
+showLLVMRelOp LTH = "slt"
+showLLVMRelOp LE = "sle"
+showLLVMRelOp GTH = "sgt"
+showLLVMRelOp GE = "sge"
+showLLVMRelOp EQU = "eq"
+showLLVMRelOp NE = "ne"
 
 showFunArgs :: [ExpVal] -> String
 showFunArgs args = unwords $ List.intersperse "," (map show args)
@@ -306,20 +307,20 @@ emitExprToBlock (EAnd expr1 expr2) labelNum = do
     numTrue <- addNewLLVMBlock
     val2 <- emitExprToBlock expr2 numTrue
     numNext <- addNewLLVMBlock
-    addLastInstruction (CondJump val1 numTrue numNext) labelNum
-    addLastInstruction (Jump val2 numNext) numTrue
+    setLastInstructionInBlock (CondJump val1 numTrue numNext) labelNum
+    setLastInstructionInBlock (Jump val2 numNext) numTrue
     resultReg <- getNextRegistry
-    addInstruction (Phi resultReg [(falseExpVal, labelNum), (val2, numTrue)]) numNext
+    addInstructionToBlock (Phi resultReg [(falseExpVal, labelNum), (val2, numTrue)]) numNext
     return $ ExpVal {repr = Reg resultReg, type_ = Bool}
 emitExprToBlock (EOr expr1 expr2) labelNum = do
     val1 <- emitExprToBlock expr1 labelNum
     numFalse <- addNewLLVMBlock
     val2 <- emitExprToBlock expr2 numFalse
     numNext <- addNewLLVMBlock
-    addLastInstruction (CondJump val1 numNext numFalse) labelNum
-    addLastInstruction (Jump val2 numNext) numFalse
+    setLastInstructionInBlock (CondJump val1 numNext numFalse) labelNum
+    setLastInstructionInBlock (Jump val2 numNext) numFalse
     resultReg <- getNextRegistry
-    addInstruction (Phi resultReg [(trueExpVal, labelNum), (val2, numFalse)]) numNext
+    addInstructionToBlock (Phi resultReg [(trueExpVal, labelNum), (val2, numFalse)]) numNext
     return $ ExpVal {repr = Reg resultReg, type_ = Bool}
 emitExprToBlock expr labelNum = do
     result <- getNextRegistry
@@ -335,7 +336,7 @@ emitExpr ELitFalse = return $ boolExpVal False
 emitExpr (EString string) = do
     addConstrString string
     reg <- convertString string
-    return $ ExpVal (repr = Reg reg, type_ = Str}
+    return $ ExpVal {repr = Reg reg, type_ = Str}
 emitExpr expr = do
     actBlock <- getActBlock
     emitExprToBlock expr actBlock
@@ -382,7 +383,7 @@ emitCondExpr (EOr e1 e2) actBlock trueBlock falseBlock = do
     emitCondExpr e2 firstFalse trueBlock falseBlock
 emitCondExpr expr actBlock trueBlock falseBlock = do
     val <- emitExpr expr actBlock
-    addLastInstruction (CondJump val trueBlock falseBlock) actBlock
+    setLastInstructionInBlock (CondJump val trueBlock falseBlock) actBlock
 
 emitStmt :: Stmt -> Eval Env
 emitStmt Empty = return ()
@@ -403,10 +404,10 @@ emitStmt (Decr ident) =
     emitStmtInstr $ EAss ident (EAdd (EVar ident) Minus (ELitInt 1))
 emitStmt (Ret expr) = do
     val <- emitExprToBlock
-    addLastInstruction $ ExprRet val
+    setLastInstruction $ ExprRet val
     ask
 emitStmt VRet = do
-    addLastInstruction VoidRet
+    setLastInstruction VoidRet
     ask
 emitStmt (Cond expr stmt) = do
     actBlock <- getActBlock
