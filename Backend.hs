@@ -2,6 +2,7 @@ module Backend where
 
 
 import AbsLatte
+import qualified Data.List as List
 import qualified Data.Map as Map
 import Control.Monad.Error
 import Control.Monad.Reader
@@ -23,7 +24,8 @@ data ExpValRepr =
 instance Show ExpValRepr where
     show (RegVal name) = name
     show (NumVal n) = show n
-    show (BoolVal b) = show b
+    show (BoolVal True) = "true"
+    show (BoolVal False) = "false"
 
 data ExpVal = ExpVal {
     repr :: ExpValRepr,
@@ -31,7 +33,7 @@ data ExpVal = ExpVal {
 }
 
 instance Show ExpVal where
-    show val = printf "%s %s" (show $ type_ val) (show $ repr val)
+    show val = printf "%s %s" (showLLVMType $ type_ val) (show $ repr val)
 
 data BinOp = Add | Sub | Mul | Div | Mod
 
@@ -46,7 +48,6 @@ data Instruction =
     BinOpExpr Registry BinOp ExpVal ExpVal |
     RelOpExpr Registry RelOp ExpVal ExpVal |
     NotExpr Registry ExpVal |
-    Concat Registry Registry Registry |
     Load Registry Type Registry |
     Call Registry Type Name [ExpVal] |
     Store ExpVal Registry |
@@ -67,23 +68,33 @@ instance Show RelOp where
 
 instance Show Instruction where
     show (BinOpExpr result binop val1 val2) =
-        printf "%s = %s %s %s, %s" result (show binop_) (show $ type_ val1) (show $ repr val1) (show $ repr val2)
+        let
+            typeRepr = showLLVMType $ type_ val1
+            val1Repr = show $ repr val1
+            val2Repr = show $ repr val2
+        in
+            printf "%s = %s %s %s, %s" result (show binop_) typeRepr val1Repr val2Repr
     show (RelOpExpr result relop val1 val2) =
-        printf "%s = icmp %s %s %s, %s" result (show relop) (
+        let
+            typeRepr = showLLVMType $ type_ val1
+            val1Repr = show $ repr val1
+            val2Repr = show $ repr val2
+        in
+            printf "%s = icmp %s %s %s, %s" result (show relop) typeRepr val1Repr val2Repr
     show (NotExpr result val) =
-        printf ""
+        printf "%s = xor i1 %s, true" result (show $ repr val)
     show (Load result type_ reg) = 
-        printf "%s = load %s* %s" result (show type_) reg
+        printf "%s = load %s* %s" result (showLLVMType type_) reg
     show (Call result type_ fun args) = 
-        printf "%s = call %s %s(%s)" result type_ fun (showFunArgs args)
-    show (Store val reg) = 
-        printf "store %s %s, %s* %s" (show $ type_ val) (show val) (show $ type_ val) reg
+        printf "%s = call %s %s(%s)" result (showLLVMType type_) fun (showFunArgs args)
+    show (Store val reg) =
+        printf "store %s, %s* %s" (show val) (showLLVMType $ type_ val) reg
     show (Alloca reg type_) =
         printf "%s = alloca %s" reg (show type_)
     show VoidRet = "ret void"
     show (ExpRet val) = "ret %s" (show val)
     show (CondJump val labelNum1 labelNum2) =
-        "br %s, label %%s, label %%s" (show val) (label labelNum1) (label labelNum2)
+        "br %s, label %%s, label %s" (show val) ('%':(label labelNum1)) (label labelNum2)
     show (Jump labelNum) = printf "br label %%s" (label labelNum)
     show (Phi result type_ exprsFromLabels) = 
         printf "%s = phi %s %s" result (show type_) (showPhiExprs exprsFromLabels)
@@ -105,7 +116,7 @@ data Environment = Environment {
 }
 data Store = Store {
     blocks :: Map.Map LabelNum LLVMBlock,
-    actInstructions :: [LLVmInstr],
+    actBlock :: labelNum
     regCounter :: Counter,
     constCounter :: Counter,
     labelCounter :: Counter,
@@ -114,11 +125,12 @@ data Store = Store {
 
 type Eval a = ReaderT Env (ErrorT String (StateT Store IO)) a
 
+
 runEval :: Env -> Store -> Eval a -> IO (Either String a, Store)
 runEval env state eval = runStateT (runErrorT (runReaderT eval env)) state
 
-getRegistry :: RegCounter -> Registry
-getRegistry regNum = "%r" ++ (show regNum)
+regName :: RegCounter -> Registry
+regName regNum = "%r" ++ (show regNum)
 
 globalName :: ident -> Name
 globalName ident = '@':(name ident)
@@ -127,12 +139,13 @@ label :: LabelNum -> Label
 label num = printf "label%s" (show num)
 
 showFunArgs :: [ExpVal] -> String
-showFunArgs args = reverse $ showFunArgs' args []
-    where
-        showFunArgs' [] accu 
+showFunArgs args = unwords $ List.intersperse "," (map show args)
 
 showPhiExprs :: [(ExpVal, LabelNum)] -> String
-showPhiExprs 
+showPhiExprs exprsWithLabels = unwords $ List.intersperse "," (map show' exprsWithLabels)
+    where
+        show' :: (ExpVal, LabelNum) -> String
+        show' (val, num) = printf "[ %s, %s ]" (show $ repr val) ('%':(label num))
 
 numExpVal :: Integer -> ExpVal
 numExpVal n = ExpVal {
@@ -152,6 +165,7 @@ trueExpVal = boolExpVal True
 falseExpVal :: ExpVal
 falseExpVal = boolExpVal False
 
+-- TODO: needs fix 
 getNextRegistry :: Eval Registry
 getNextRegistry = do
     store <- get
@@ -164,8 +178,9 @@ getNextRegistry = do
         labelCounter = labelCounter store
         strConstants = strConstants store
     }
-    return $ getRegistry actRegNum
+    return $ regName actRegNum
 
+-- TODO: needs fix, add instructions to specified block
 addInstructions :: [Instruction] -> Eval ()
 addInstructions instrs = do
     store <- get
@@ -200,6 +215,7 @@ emitRelOpInstruction e1 e2 RelOp resultReg = do
     val2 <- emitExprToBlock e2
     return (Bool, RelOpExpr resultReg RelOp val1 val2)
 
+-- TODO: useless
 negate :: Expr -> Expr
 negate ELitTrue = ELitFalse
 negate ELitFalse = ELitTrue
@@ -304,8 +320,8 @@ emitDeclarations type_ (item:items) accu = case item of
     NoInit ident -> do
         emptyStrReg <- getEmptyStrReg
         let val = (case type_ of
-            Int -> ExpVal {repr = NumVal 0, type_ = Int}
-            Bool -> ExpVal {repr = BoolVal False, type_ = Bool}
+            Int -> numExpVal 0
+            Bool -> falseExpVal
             Str -> ExpVal {repr = RegVal emptyStrReg, type_ = Str})
         (env, updatedAccu) <- declareItem ident val accu
         local (\_ -> env) (emitDeclarations type_ items updatedAccu)
