@@ -56,7 +56,8 @@ data Instruction =
     ExpRet ExpVal |
     CondJump ExpVal LabelNum LabelNum |
     Jump LabelNum |
-    Phi Registry Type [(ExpVal, LabelNum)]
+    Phi Registry Type [(ExpVal, LabelNum)] |
+    GetElementPtr Registry Integer Name
 
 instance Show Instruction where
     show (BinOpExpr result binop val1 val2) =
@@ -90,6 +91,8 @@ instance Show Instruction where
     show (Jump labelNum) = printf "br label %%s" (label labelNum)
     show (Phi result type_ exprsFromLabels) = 
         printf "%s = phi %s %s" result (show type_) (showPhiExprs exprsFromLabels)
+    show (GetElementPtr resultReg length constName) = 
+        printf "%s = getelementptr inbounds [%s x i8]* %s, i32 0, i32 0" resultReg (show length) constName
 
 data LLVMBlock = LLVMBlock {
     labelNum :: LabelNum,
@@ -125,8 +128,11 @@ runEval env state eval = runStateT (runErrorT (runReaderT eval env)) state
 regName :: RegCounter -> Registry
 regName regNum = "%r" ++ (show regNum)
 
-globalName :: ident -> Name
+globalName :: Ident -> Name
 globalName ident = '@':(name ident)
+
+constName :: Counter -> Name
+constName strNum = printf "@.str%s" (show strNum)
 
 label :: LabelNum -> Label
 label num = printf "label%s" (show num)
@@ -138,6 +144,12 @@ showLLVMRelOp GTH = "sgt"
 showLLVMRelOp GE = "sge"
 showLLVMRelOp EQU = "eq"
 showLLVMRelOp NE = "ne"
+
+showLLVMType :: Type -> String
+showLLVMType Int = "i32"
+showLLVMType Str = "i8*"
+showLLVMType Bool = "i1"
+showLLVMType Void = "void"
 
 showFunArgs :: [ExpVal] -> String
 showFunArgs args = unwords $ List.intersperse "," (map show args)
@@ -230,23 +242,25 @@ setLastInstruction lastInstr = do
     store <- get
     setLastInstructionInBlock (actBlockNum store) (setLastInBlock lastInstr)
 
+concatStrings :: ExpVal -> ExpVal -> 
+
 emitBinOpInstruction :: Expr -> Expr -> BinOp -> Registry -> Eval (Type, Instruction)
 emitBinOpInstruction e1 e2 Add resultReg = do
-    val1 <- emitExprToBlock e1
-    val2 <- emitExprToBlock e2
+    val1 <- emitExpr e1
+    val2 <- emitExpr e2
     -- after type checking
     case type_ val1 of
         Int -> return (Int, BinOpExpr resultReg Add val1 val2)
         Str -> return (Str, Concat resultReg (reg val1) (reg val2))
 emitBinOpInstruction e1 e2 operator resultReg = do
-    val1 <- emitExprToBlock e1
-    val2 <- emitExprToBlock e2
+    val1 <- emitExpr e1
+    val2 <- emitExpr e2
     return (Int, BinOpExpr resultReg operator e1 e2)
 
 emitRelOpInstruction :: Expr -> Expr -> RelOp -> Registry -> Eval (Type, Instruction)
 emitRelOpInstruction e1 e2 RelOp resultReg = do
-    val1 <- emitExprToBlock e1
-    val2 <- emitExprToBlock e2
+    val1 <- emitExpr e1
+    val2 <- emitExpr e2
     return (Bool, RelOpExpr resultReg RelOp val1 val2)
 
 -- TODO: useless
@@ -284,8 +298,6 @@ emitExprInstruction (EMul expr1 Div expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Div resultReg
 emitExprInstruction (EMul expr1 Mod expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Mod resultReg
-emitExprInstruction (EAdd expr1 Plus expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 Add resultReg
 emitExprInstruction (EAdd expr1 Minus expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Sub resultReg
 emitExprInstruction (ERel expr1 LTH expr2) resultReg =
@@ -328,19 +340,73 @@ emitExprToBlock expr labelNum = do
     addInstruction instr labelNum
     return $ ExpVal {repr = Reg result, type_ = t}
 
+llvmStrLen :: String -> Integer
+llvmStrLen s = (length s) + 1
+
+getStringName :: String -> Name
+getStringName s = do
+    store <- get
+    case Map.lookup s (strConstants store) of
+        Just name -> return name
+        Nothing -> do
+            let name = constName (constCounter store)
+            put $ Store {
+                blocks = blocks store,
+                actBlockNum = actBlockNum store,
+                regCounter = regCounter store,
+                constCounter = (constCounter store) + 1,
+                labelCounter = labelCounter store,
+                strConstants = Map.insert s name (strConstants store)
+            }
+            return name
+
+concat :: ExpVal -> ExpVal -> Eval ExpVal
+concat val1 val2 = do
+    (lenReg1, lenVal1) <- getExpVal Int
+    addInstruction $ Call lenReg1 Int (globalName "strlen") [lenVal1]
+    (lenReg2, lenVal2) <- getExpVal Int
+    addInstruction $ Call lenReg2 Int (globalName "strlen") [lenVal2]
+    (tempReg1, tempVal1) <- getExpVal Int
+    addInstruction $ BinOpExpr tempReg1 Add lenVal1 (numExpVal 1)
+    (tempReg2, tempVal2) <- getExpVal Int
+    addInstruction $ BinOpExpr tempReg2 Add tempVal1 lenVal2
+    (mallocReg, mallocVal) <- getExpVal Str
+    addInstruction $ Call mallocReg Str (globalName "malloc") [tempVal2]
+    (strcpyReg, strcpyVal) <- getExpVal Str
+    addInstruction $ Call strcpyReg Str (globalName "strcpy") [mallocVal, val1]
+    (strcatReg, strcatVal) <- getExpVal Str
+    addInstruction $ Call strcatReg Str (globalName "strcat") [strcpyVal, val2]
+    return strcatVal
+    where
+        getExpVal :: Type -> Eval (Registry, ExpVal)
+        getExpVal t = do
+            reg <- getNextRegistry
+            let val = ExpVal {repr = Reg reg, type_ = t}
+            return $ (reg, val)
 
 emitExpr :: Expr -> Eval ExprVal
 emitExpr (ELitInt n) = return $ numExpVal n
 emitExpr ELitTrue = return $ boolExpVal True
 emitExpr ELitFalse = return $ boolExpVal False
 emitExpr (EString string) = do
-    addConstrString string
-    reg <- convertString string
-    return $ ExpVal {repr = Reg reg, type_ = Str}
+    store <- get
+    name <- getStringName s
+    registry <- getNextRegistry
+    addInstruction $ GetElementPtr registry (llvmStrLen s) name
+    return $ ExpVal {repr = Reg registry, type_ = Str}
+emitExpr (EAdd expr1 Plus expr2) = do
+    val1 <- emitExpr e1 
+    val2 <- emitExpr e2
+    -- after type checking
+    case type_ val1 of
+        Str -> concat val1 val2
+        Int -> do
+            resultReg <- getNextRegistry
+            addInstruction $ BinOpExpr resultReg Add val1 val2
+            return $ ExpVal {repr = Reg resultReg, type_ = Int}
 emitExpr expr = do
     actBlock <- getActBlock
     emitExprToBlock expr actBlock
-
 
 emitDeclarations :: Type -> [Item] -> [Instruction] -> Eval (Env, [Instruction])
 emitDeclarations type_ [] accu = do
