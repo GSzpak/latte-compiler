@@ -100,7 +100,7 @@ instance Show Instruction where
         printf "%s = phi %s %s" result (show type_) (showPhiExprs exprsFromLabels)
 
 data LLVMBlock = LLVMBlock {
-    label :: Label,
+    labelNum :: LabelNum,
     instructions :: [Instruction],
     lastInstr :: Maybe Instruction,
 }
@@ -116,7 +116,7 @@ data Environment = Environment {
 }
 data Store = Store {
     blocks :: Map.Map LabelNum LLVMBlock,
-    actBlock :: labelNum
+    actBlockNum :: labelNum
     regCounter :: Counter,
     constCounter :: Counter,
     labelCounter :: Counter,
@@ -165,36 +165,69 @@ trueExpVal = boolExpVal True
 falseExpVal :: ExpVal
 falseExpVal = boolExpVal False
 
--- TODO: needs fix 
 getNextRegistry :: Eval Registry
 getNextRegistry = do
     store <- get
     let actRegNum = regCounter store
     put $ Store {
-        blocks = blocks store
-        actInstructions = actInstructions store
-        regCounter = actRegNum + 1
-        constCounter = constCounter store
-        labelCounter = labelCounter store
+        blocks = blocks store,
+        actBlockNum = actBlockNum store,
+        regCounter = actRegNum + 1,
+        constCounter = constCounter store,
+        labelCounter = labelCounter store,
         strConstants = strConstants store
     }
     return $ regName actRegNum
 
--- TODO: needs fix, add instructions to specified block
+addToBlock :: [Instruction] -> LLVMBlock -> LLVMBlock
+addToBlock instrs block = LLVMBlock {
+    labelNum = labelNum block,
+    instructions = instrs ++ (instructions block),
+    lastInstr = lastInstr block
+}
+
+setLastInBlock :: Instruction -> LLVMBlock -> LLVMBlock
+setLastInBlock lastInstr block = LLVMBlock {
+    labelNum = labelNum block,
+    instructions = instructions block,
+    lastInstr = Just lastInstr
+}
+
+changeBlock :: LabelNum -> (LLVMBlock -> LLVMBlock) -> Eval ()
+changeBlock blockNum updateFun = do
+    store <- get
+    let Just actBlock = Map.lookup (blockNum store) (blocks store)
+    put $ Store {
+        blocks = Map.insert labelNum (updateFun actBlock),
+        actBlockNum = actBlockNum store
+        regCounter = regCounter store,
+        constCounter = constCounter store,
+        labelCounter = labelCounter store,
+        strConstants = strConstants store,
+    }
+
+addInstructionsToBlock :: [Instruction] -> LabelNum -> Eval ()
+addInstructionsToBlock instrs labelNum = changeBlock labelNum (addToBlock instrs)
+
 addInstructions :: [Instruction] -> Eval ()
 addInstructions instrs = do
     store <- get
-    put $ Store {
-        blocks = blocks store
-        actInstructions = instrs ++ (actInstructions store)
-        regCounter = actRegNum + 1
-        constCounter = constCounter store
-        labelCounter = labelCounter store
-        strConstants = strConstants store
-    }
+    addInstructionsToBlock instrs (actBlockNum store)
+
+addInstructionToBlock :: Instruction -> LabelNum -> Eval ()
+addInstructionToBlock instr labelNum = addInstructionsToBlock [instr] labelNum
 
 addInstruction :: Instruction -> Eval ()
 addInstruction instr = addInstructions [instr]
+
+setLastInstructionInBlock :: Instruction -> LabelNum -> Eval ()
+setLastInstructionInBlock lastInstr labelNum = 
+    changeBlock labelNum (setLastInBlock lastInstr)
+
+setLastInstruction :: Instruction -> Eval ()
+setLastInstruction lastInstr = do
+    store <- get
+    setLastInstructionInBlock (actBlockNum store) (setLastInBlock lastInstr)
 
 emitBinOpInstruction :: Expr -> Expr -> BinOp -> Registry -> Eval (Type, Instruction)
 emitBinOpInstruction e1 e2 Add resultReg = do
