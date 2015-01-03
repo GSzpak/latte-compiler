@@ -29,7 +29,19 @@ data ExpVal = ExpVal {
     repr :: ExpValRepr,
     type_ :: Type
 }
+
+instance Show ExpVal where
+    show val = printf "%s %s" (show $ type_ val) (show $ repr val)
+
 data BinOp = Add | Sub | Mul | Div | Mod
+
+instance Show BinOp where
+    show Add = "add"
+    show Sub = "sub"
+    show Mul = "mul"
+    show Div = "sdiv"
+    show Mod = "srem"
+
 data Instruction =
     BinOpExpr Registry BinOp ExpVal ExpVal |
     RelOpExpr Registry RelOp ExpVal ExpVal |
@@ -43,13 +55,43 @@ data Instruction =
     ExpRet ExpVal |
     CondJump ExpVal LabelNum LabelNum |
     Jump LabelNum |
-    Phi Registry [ExpVal, LabelNum]
-    
+    Phi Registry Type [(ExpVal, LabelNum)]
+
+instance Show RelOp where
+    show LTH = "slt"
+    show LE = "sle"
+    show GTH = "sgt"
+    show GE = "sge"
+    show EQU = "eq"
+    show NE = "ne"
+
+instance Show Instruction where
+    show (BinOpExpr result binop val1 val2) =
+        printf "%s = %s %s %s, %s" result (show binop_) (show $ type_ val1) (show $ repr val1) (show $ repr val2)
+    show (RelOpExpr result relop val1 val2) =
+        printf "%s = icmp %s %s %s, %s" result (show relop) (
+    show (NotExpr result val) =
+        printf ""
+    show (Load result type_ reg) = 
+        printf "%s = load %s* %s" result (show type_) reg
+    show (Call result type_ fun args) = 
+        printf "%s = call %s %s(%s)" result type_ fun (showFunArgs args)
+    show (Store val reg) = 
+        printf "store %s %s, %s* %s" (show $ type_ val) (show val) (show $ type_ val) reg
+    show (Alloca reg type_) =
+        printf "%s = alloca %s" reg (show type_)
+    show VoidRet = "ret void"
+    show (ExpRet val) = "ret %s" (show val)
+    show (CondJump val labelNum1 labelNum2) =
+        "br %s, label %%s, label %%s" (show val) (label labelNum1) (label labelNum2)
+    show (Jump labelNum) = printf "br label %%s" (label labelNum)
+    show (Phi result type_ exprsFromLabels) = 
+        printf "%s = phi %s %s" result (show type_) (showPhiExprs exprsFromLabels)
+
 data LLVMBlock = LLVMBlock {
     label :: Label,
     instructions :: [Instruction],
-    predecessors :: [LabelNum],
-    successors :: [LabelNum]
+    lastInstr :: Maybe Instruction,
 }
 
 data EnvElem = EnvElem {
@@ -80,6 +122,17 @@ getRegistry regNum = "%r" ++ (show regNum)
 
 globalName :: ident -> Name
 globalName ident = '@':(name ident)
+
+label :: LabelNum -> Label
+label num = printf "label%s" (show num)
+
+showFunArgs :: [ExpVal] -> String
+showFunArgs args = reverse $ showFunArgs' args []
+    where
+        showFunArgs' [] accu 
+
+showPhiExprs :: [(ExpVal, LabelNum)] -> String
+showPhiExprs 
 
 numExpVal :: Integer -> ExpVal
 numExpVal n = ExpVal {
@@ -199,14 +252,13 @@ emitExprInstruction (ERel expr1 NE expr2) resultReg =
     emitRelOpInstruction expr1 expr2 NE resultReg
 
 emitExprToBlock :: Expr -> LabelNum -> Eval ExpVal
--- TODO: EString
 emitExprToBlock (EAnd expr1 expr2) labelNum = do
     val1 <- emitExprToBlock expr1 labelNum
     numTrue <- addNewLLVMBlock
     val2 <- emitExprToBlock expr2 numTrue
     numNext <- addNewLLVMBlock
-    addInstruction (CondJump val1 numTrue numNext) labelNum
-    addInstruction (Jump val2 numNext) numTrue
+    addLastInstruction (CondJump val1 numTrue numNext) labelNum
+    addLastInstruction (Jump val2 numNext) numTrue
     resultReg <- getNextRegistry
     addInstruction (Phi resultReg [(falseExpVal, labelNum), (val2, numTrue)]) numNext
     return $ ExpVal {repr = Reg resultReg, type_ = Bool}
@@ -215,8 +267,8 @@ emitExprToBlock (EOr expr1 expr2) labelNum = do
     numFalse <- addNewLLVMBlock
     val2 <- emitExprToBlock expr2 numFalse
     numNext <- addNewLLVMBlock
-    addInstruction (CondJump val1 numNext numFalse) labelNum
-    addInstruction (Jump val2 numNext) numFalse
+    addLastInstruction (CondJump val1 numNext numFalse) labelNum
+    addLastInstruction (Jump val2 numNext) numFalse
     resultReg <- getNextRegistry
     addInstruction (Phi resultReg [(trueExpVal, labelNum), (val2, numFalse)]) numNext
     return $ ExpVal {repr = Reg resultReg, type_ = Bool}
@@ -231,6 +283,10 @@ emitExpr :: Expr -> Eval ExprVal
 emitExpr (ELitInt n) = return $ numExpVal n
 emitExpr ELitTrue = return $ boolExpVal True
 emitExpr ELitFalse = return $ boolExpVal False
+emitExpr (EString string) = do
+    addConstrString string
+    reg <- convertString string
+    return $ ExpVal (repr = Reg reg, type_ = Str}
 emitExpr expr = do
     actBlock <- getActBlock
     emitExprToBlock expr actBlock
@@ -277,7 +333,7 @@ emitCondExpr (EOr e1 e2) actBlock trueBlock falseBlock = do
     emitCondExpr e2 firstFalse trueBlock falseBlock
 emitCondExpr expr actBlock trueBlock falseBlock = do
     val <- emitExpr expr actBlock
-    addInstruction (CondJump val trueBlock falseBlock) actBlock
+    addLastInstruction (CondJump val trueBlock falseBlock) actBlock
 
 emitStmt :: Stmt -> Eval Env
 emitStmt Empty = return ()
@@ -298,10 +354,10 @@ emitStmt (Decr ident) =
     emitStmtInstr $ EAss ident (EAdd (EVar ident) Minus (ELitInt 1))
 emitStmt (Ret expr) = do
     val <- emitExprToBlock
-    addInstruction $ ExprRet val
+    addLastInstruction $ ExprRet val
     ask
 emitStmt VRet = do
-    addInstruction VoidRet
+    addLastInstruction VoidRet
     ask
 emitStmt (Cond expr stmt) = do
     actBlock <- getActBlock
@@ -314,10 +370,17 @@ emitStmt (CondElse expr stmt1 stmt2) = do
     actBlock <- getActBlock
     trueBlock <- addNewLLVMBlock
     emitStmt stmt1
-    addInstruction (Jump 
     falseBlock <- addNewLLVMBlock
     emitStmt stmt2
     emitCondExpr expr actBlock trueBlock falseBlock
+    addLastInstr trueBlock
+emitStmt (While expr stmt) = do
+    actBlock <- getActBlock
+    loop <- addNewLLVMBlock
+    addLastInstruction (Jump loop)
+    emitStmt stmt
+    loopCond <- addNewLLVMBlock
+    emitCondExpr loopCond loop 
 
 emitStmts :: [Stmt] -> Eval Env
 emitStmts [] = ask
