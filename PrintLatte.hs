@@ -161,9 +161,9 @@ instance Print Expr where
    EString str -> prPrec i 6 (concatD [prt 0 str])
    Neg expr -> prPrec i 5 (concatD [doc (showString "-") , prt 6 expr])
    Not expr -> prPrec i 5 (concatD [doc (showString "!") , prt 6 expr])
-   EMul expr0 mulop expr -> prPrec i 4 (concatD [prt 4 expr0 , prt 0 mulop , prt 5 expr])
-   EAdd expr0 addop expr -> prPrec i 3 (concatD [prt 3 expr0 , prt 0 addop , prt 4 expr])
-   ERel expr0 relop expr -> prPrec i 2 (concatD [prt 2 expr0 , prt 0 relop , prt 3 expr])
+   EMul mulop expr0 expr -> prPrec i 4 (concatD [prt 0 mulop , prt 4 expr0 , prt 5 expr])
+   EAdd addop expr0 expr -> prPrec i 3 (concatD [prt 0 addop , prt 3 expr0 , prt 4 expr])
+   ERel relop expr0 expr -> prPrec i 2 (concatD [prt 0 relop , prt 2 expr0 , prt 3 expr])
    EAnd expr0 expr -> prPrec i 1 (concatD [prt 2 expr0 , doc (showString "&&") , prt 1 expr])
    EOr expr0 expr -> prPrec i 0 (concatD [prt 1 expr0 , doc (showString "||") , prt 0 expr])
 

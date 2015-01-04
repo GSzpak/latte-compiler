@@ -96,11 +96,11 @@ All other symbols are terminals.
   | //Expr5// | -> | ``-`` //Expr6// 
   |  |  **|**  | ``!`` //Expr6// 
   |  |  **|**  | //Expr6// 
-  | //Expr4// | -> | //Expr4// //MulOp// //Expr5// 
+  | //Expr4// | -> | //MulOp// //Expr4// //Expr5// 
   |  |  **|**  | //Expr5// 
-  | //Expr3// | -> | //Expr3// //AddOp// //Expr4// 
+  | //Expr3// | -> | //AddOp// //Expr3// //Expr4// 
   |  |  **|**  | //Expr4// 
-  | //Expr2// | -> | //Expr2// //RelOp// //Expr3// 
+  | //Expr2// | -> | //RelOp// //Expr2// //Expr3// 
   |  |  **|**  | //Expr3// 
   | //Expr1// | -> | //Expr2// ``&&`` //Expr1// 
   |  |  **|**  | //Expr2// 

@@ -75,9 +75,9 @@ transExpr x = case x of
   EString str  -> failure x
   Neg expr  -> failure x
   Not expr  -> failure x
-  EMul expr1 mulop2 expr3  -> failure x
-  EAdd expr1 addop2 expr3  -> failure x
-  ERel expr1 relop2 expr3  -> failure x
+  EMul mulop expr1 expr2  -> failure x
+  EAdd addop expr1 expr2  -> failure x
+  ERel relop expr1 expr2  -> failure x
   EAnd expr1 expr2  -> failure x
   EOr expr1 expr2  -> failure x
 

@@ -26,6 +26,9 @@ instance Typable VarEnvElem where
 instance Typable Arg where
     getType (Arg type_ _) = type_
 
+instance Typable TopDef where
+    getType (FnDef type_ _ args _) = Fun type_ (map getType args)
+
 type TypeEnv a = Map.Map Ident a
 type VarEnv = TypeEnv VarEnvElem
 type FunEnv = TypeEnv FunEnvElem
@@ -35,24 +38,11 @@ data Env = Env {
     actBlockDepth :: BlockDepth,
     actReturnType :: Type
 }
-type TypeEval a = ReaderT Env (ErrorT String IO) a
-
-data ExprVal = IntVal Integer | BoolVal Bool | StrVal String
-
-instance Eq ExprVal where
-    (IntVal n1) == (IntVal n2) = (n1 == n2)
-    (BoolVal b1) == (BoolVal b2) = (b1 == b2)
-    (StrVal s1) == (StrVal s2) = (s1 == s2)
-    _ == _ = False
-
-instance Ord ExprVal where
-    (IntVal n1) <= (IntVal n2) = (n1 <= n2)
-    (BoolVal b1) <= (BoolVal b2) = (b1 <= b2)
-    (StrVal s1) <= (StrVal s2) = (s1 <= s2)
+type Eval a = ReaderT Env (ErrorT String IO) a
 
 
-runTypeEval :: Env -> TypeEval a -> IO (Either String a)
-runTypeEval env eval = runErrorT (runReaderT eval env)
+runEval :: Env -> Eval a -> IO (Either String a)
+runEval env eval = runErrorT (runReaderT eval env)
 
 emptyEnv :: Env
 emptyEnv = Env {
@@ -91,29 +81,26 @@ duplicatedVariableErr ident = printf "Duplicated variable declaration: %s" (name
 duplicatedFunErr :: Ident -> String
 duplicatedFunErr ident = printf "Duplicated function declaration: %s" (name ident)
 
-evaluationNotPossible :: String
-evaluationNotPossible = "Expression evaluation during compilation not possible"
-
-getIdentType :: Typable a => Ident -> (Env -> TypeEnv a) -> String -> TypeEval Type
+getIdentType :: Typable a => Ident -> (Env -> TypeEnv a) -> String -> Eval Type
 getIdentType ident envSelector errMessage = do
     env <- ask
     case Map.lookup ident (envSelector env) of
         Just envElem -> return $ getType envElem
         Nothing -> throwError errMessage
 
-checkTypes :: Type -> Type -> TypeEval Type
+checkTypes :: Type -> Type -> Eval Type
 checkTypes actType expectedType = do
     if actType /= expectedType then
         throwError $ incomaptibleTypesErr expectedType actType
     else
         return actType
 
-checkExprType :: Expr -> Type -> TypeEval Type
+checkExprType :: Expr -> Type -> Eval Type
 checkExprType expr expectedType = do
     exprType <- evalExprType expr
     checkTypes exprType expectedType
 
-checkTwoArgExpression :: Expr -> Expr -> [Type] -> TypeEval Type
+checkTwoArgExpression :: Expr -> Expr -> [Type] -> Eval Type
 checkTwoArgExpression expr1 expr2 expectedTypes = do
     t1 <- evalExprType expr1
     t2 <- evalExprType expr2
@@ -125,7 +112,7 @@ checkTwoArgExpression expr1 expr2 expectedTypes = do
     else
         throwError $ unexpectedTypeErr resultType
 
-evalExprType :: Expr -> TypeEval Type
+evalExprType :: Expr -> Eval Type
 evalExprType (EVar ident) = getIdentType ident varEnv (undeclaredVariableErr ident)
 evalExprType (ELitInt _) = return Int
 evalExprType ELitTrue = return Bool
@@ -147,64 +134,7 @@ evalExprType (EApp ident arguments) = do
     else
         throwError $ incompatibleParametersErr ident argTypes actTypes 
 
--- Expression evaluation is run after type checking.
--- Throws error if evaluation is not possible during compilation.
-
-evalConstIntExpr :: Expr -> Expr -> (Integer -> Integer -> Integer) -> Bool -> TypeEval ExprVal
-evalConstIntExpr e1 e2 oper checkDivision = do
-    IntVal n1 <- evalConstExpr e1
-    IntVal n2 <- evalConstExpr e2
-    if checkDivision && n2 == 0 then
-        throwError evaluationNotPossible
-    else
-        return $ IntVal $ oper n1 n2
-
-evalConstBoolExpr :: Expr -> Expr -> (Bool -> Bool -> Bool) -> TypeEval ExprVal
-evalConstBoolExpr e1 e2 oper = do
-    BoolVal b1 <- evalConstExpr e1
-    BoolVal b2 <- evalConstExpr e2
-    return $ BoolVal $ oper b1 b2
-
-evalCompareExpr :: Expr -> Expr -> (ExprVal -> ExprVal -> Bool) -> TypeEval ExprVal
-evalCompareExpr e1 e2 oper = do
-    val1 <- evalConstExpr e1
-    val2 <- evalConstExpr e2
-    return $ BoolVal $ oper val1 val2
-
-evalConstExpr :: Expr -> TypeEval ExprVal
-evalConstExpr (EVar ident) = throwError evaluationNotPossible
-evalConstExpr (ELitInt n) = return (IntVal n)
-evalConstExpr ELitTrue = return (BoolVal True)
-evalConstExpr ELitFalse = return (BoolVal False)
-evalConstExpr (EString s) = return (StrVal s)
-evalConstExpr (Not expr) = do
-    BoolVal b <- evalConstExpr expr
-    return $ BoolVal $ not b
-evalConstExpr (Neg expr) = do
-    IntVal n <- evalConstExpr expr
-    return $ IntVal $ -n
-evalConstExpr (EMul e1 Times e2) = evalConstIntExpr e1 e2 (*) False
-evalConstExpr (EMul e1 Div e2) = evalConstIntExpr e1 e2 div True
-evalConstExpr (EMul e1 Mod e2) = evalConstIntExpr e1 e2 mod True
-evalConstExpr (EAdd e1 Plus e2) = do
-    exprType <- evalExprType e1
-    case exprType of 
-        Int -> evalConstIntExpr e1 e2 (+) False
-        Str -> do
-            StrVal s1 <- evalConstExpr e1
-            StrVal s2 <- evalConstExpr e2
-            return $ StrVal $ s1 ++ s2
-evalConstExpr (EAdd e1 Minus e2) = evalConstIntExpr e1 e2 (-) False
-evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (&&)
-evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (||)
-evalConstExpr (ERel e1 LTH e2) = evalCompareExpr e1 e2 (<)
-evalConstExpr (ERel e1 LE e2) = evalCompareExpr e1 e2 (<=)
-evalConstExpr (ERel e1 GTH e2) = evalCompareExpr e1 e2 (>)
-evalConstExpr (ERel e1 GE e2) = evalCompareExpr e1 e2 (>=)
-evalConstExpr (ERel e1 EQU e2) = evalCompareExpr e1 e2 (==)
-evalConstExpr (ERel e1 NE e2) = evalCompareExpr e1 e2 (/=)
-
-checkIfVarDeclared :: Ident -> TypeEval ()
+checkIfVarDeclared :: Ident -> Eval ()
 checkIfVarDeclared ident = do
     env <- ask
     case Map.lookup ident (varEnv env) of
@@ -230,7 +160,7 @@ declareVar ident t env =
             actReturnType = actReturnType env
         }
 
-checkStmt :: Stmt -> TypeEval Env
+checkStmt :: Stmt -> Eval Env
 checkStmt Empty = ask
 checkStmt (BStmt block) =
     local updateBlockDepth (checkBlock block)
@@ -244,7 +174,7 @@ checkStmt (BStmt block) =
         }
 checkStmt (Decl type_ items) = checkDeclaration items
     where
-        checkDeclaration :: [Item] -> TypeEval Env
+        checkDeclaration :: [Item] -> Eval Env
         checkDeclaration [] = ask
         checkDeclaration ((NoInit ident):items) = do
             checkIfVarDeclared ident
@@ -287,29 +217,179 @@ checkStmt (CondElse expr ifStmt elseStmt) = do
 checkStmt (While expr stmt) = do
     checkExprType expr Bool
     checkStmt stmt
+checkStmt (SExpr _) = do
+    evalExprType
+    ask
 
-checkStatements :: [Stmt] -> TypeEval Env
+checkStatements :: [Stmt] -> Eval Env
 checkStatements [] = ask
 checkStatements (stmt:statements) = do
     env <- checkStmt stmt
     local (\_ -> env) (checkStatements statements)
 
-checkBlock :: Block -> TypeEval Env
+checkBlock :: Block -> Eval Env
 checkBlock (Block statements) = checkStatements statements
 
-declareArgs :: [Arg] -> TypeEval Env
-declareArgs [] = ask
-declareArgs ((Arg type_ ident):args) = do
-    checkIfVarDeclared ident
-    local (declareVar ident type_) (declareArgs args)
+-- Expression evaluation is run after type checking.
+-- Throws error if evaluation is not possible during compilation.
 
-checkStmtForReturn :: Stmt -> TypeEval Bool
+data ExprConst = IntConst Integer | BoolConst Bool | StrConst String
+
+instance Eq ExprConst where
+    (IntConst n1) == (IntConst n2) = (n1 == n2)
+    (BoolConst b1) == (BoolConst b2) = (b1 == b2)
+    (StrConst s1) == (StrConst s2) = (s1 == s2)
+    _ == _ = False
+
+instance Ord ExprConst where
+    (IntConst n1) <= (IntConst n2) = (n1 <= n2)
+    (BoolConst b1) <= (BoolConst b2) = (b1 <= b2)
+    (StrConst s1) <= (StrConst s2) = (s1 <= s2)
+
+getExpFromConst :: ExprConst -> Expr
+getExpFromConst (IntConst n) = ELitInt n
+getExpFromConst (BoolConst True) = ELitTrue
+getExpFromConst (BoolConst False) = ELitFalse
+getExpFromConst (StrConst s) = EString s
+
+evaluationNotPossible :: String
+evaluationNotPossible = "Not possible"
+
+evaluationError :: String
+evaluationError = "Error while evaluating constant expression"
+
+evalConstExpr :: Expr -> Eval ExprConst
+evalConstExpr (EVar ident) = throwError evaluationNotPossible
+evalConstExpr (ELitInt n) = return (IntConst n)
+evalConstExpr ELitTrue = return (BoolConst True)
+evalConstExpr ELitFalse = return (BoolConst False)
+evalConstExpr (EString s) = return (StrConst s)
+evalConstExpr (Not expr) = do
+    BoolConst b <- evalConstExpr expr
+    return $ BoolConst $ not b
+evalConstExpr (Neg expr) = do
+    IntConst n <- evalConstExpr expr
+    return $ IntConst $ -n
+evalConstExpr (EMul e1 Times e2) = evalConstIntExpr e1 e2 (*) False
+evalConstExpr (EMul e1 Div e2) = evalConstIntExpr e1 e2 div True
+evalConstExpr (EMul e1 Mod e2) = evalConstIntExpr e1 e2 mod True
+evalConstExpr (EAdd e1 Plus e2) = do
+    exprType <- evalExprType e1
+    case exprType of 
+        Int -> evalConstIntExpr e1 e2 (+) False
+        Str -> do
+            StrConst s1 <- evalConstExpr e1
+            StrConst s2 <- evalConstExpr e2
+            return $ StrConst $ s1 ++ s2
+evalConstExpr (EAdd e1 Minus e2) = evalConstIntExpr e1 e2 (-) False
+evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (&&)
+evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (||)
+evalConstExpr (ERel e1 LTH e2) = evalCompareExpr e1 e2 (<)
+evalConstExpr (ERel e1 LE e2) = evalCompareExpr e1 e2 (<=)
+evalConstExpr (ERel e1 GTH e2) = evalCompareExpr e1 e2 (>)
+evalConstExpr (ERel e1 GE e2) = evalCompareExpr e1 e2 (>=)
+evalConstExpr (ERel e1 EQU e2) = evalCompareExpr e1 e2 (==)
+evalConstExpr (ERel e1 NE e2) = evalCompareExpr e1 e2 (/=)
+evalConstExpr (EApp _ exprs) 
+
+foldConstIntExpr :: Expr -> Expr -> (Integer -> Integer -> Integer) -> Bool -> Eval ExprConst
+foldConstIntExpr e1 e2 oper checkDivision = do
+    IntConst n1 <- evalConstExpr e1
+    IntConst n2 <- evalConstExpr e2
+    if checkDivision && n2 == 0 then
+        throwError evaluationError
+    else
+        return $ IntConst $ oper n1 n2
+
+evalConstBoolExpr :: Expr -> Expr -> (Bool -> Bool -> Bool) -> Eval ExprConst
+evalConstBoolExpr e1 e2 oper = do
+    BoolConst b1 <- evalConstExpr e1
+    BoolConst b2 <- evalConstExpr e2
+    return $ BoolConst $ oper b1 b2
+
+evalCompareExpr :: Expr -> Expr -> (ExprConst -> ExprConst -> Bool) -> Eval ExprConst
+evalCompareExpr e1 e2 oper = do
+    val1 <- evalConstExpr e1
+    val2 <- evalConstExpr e2
+    return $ BoolConst $ oper val1 val2
+
+isConstant :: Expr -> Bool
+isConstant (ELitInt _) = True
+isConstant ELitTrue = True
+isConstant ELitFalse = True
+isConstant (EString s) = True
+isConstant expr = False
+
+exprFromBool :: Bool -> Expr
+exprFromBool True = ELitTrue
+exprFromBool False = ELitFalse
+
+boolFromExpr :: Expr -> Bool
+boolFromExpr ELitTrue = True
+boolFromExpr ELitFalse = False
+
+apply :: Expr -> Expr -> (a -> a -> a) -> Expr
+apply (ElitInt n1) (ElitInt n2) fun = ElitInt $ fun n1 n2
+apply (EString s1) (EString s2) fun = EString $ fun s1 s2
+apply boolExpr1 boolExpr2 fun = exprFromBool $ fun (boolFromExpr boolExpr1) (boolFromExpr boolExpr2)
+
+foldBinOpExpr 
+
+foldConstExpr :: Expr -> Eval Expr
+foldConstExpr (EVar ident) = return $ EVar ident
+foldConstExpr (ELitInt n) = return $ ELitInt n
+foldConstExpr ELitTrue = return ELitTrue
+foldConstExpr ELitFalse = return ELitFalse
+foldConstExpr (EString s) = return $ EString s
+foldConstExpr (Not expr) = do
+    folded <- foldConstExpr expr
+    case folded of
+        ELitTrue = return ELitFalse
+        ELitFalse = return ELitTrue
+        expr = return (Not expr)
+foldConstExpr (Neg expr) = do
+    folded <- foldConstExpr expr
+    case folded of
+        ELitInt n = return $ ElitInt (-n)
+foldConstExpr (EApp ident exprs) = do
+    foldedArgs <- mapM $ foldConstExpr exprs
+    return $ EApp ident foldedArgs
+foldConstExpr expr@(EMul e1 Times e2) = do
+    folded1 <- foldConstExpr e1
+    folded2 <- foldConstExpr e2
+
+
+updateStmtIfPossible :: Expr -> (Expr -> Stmt) -> Eval Stmt
+updateStmtIfPossible expr stmtConstructor = do {
+        val <- evalConstExpr expr;
+        return $ stmtConstructor $ getExpFromConst val
+    } `catchError` (\message -> do {
+        case message of
+            evaluationNotPossible -> return $ stmtConstructor expr
+            evaluationError -> throwError "%s in expression %s" evaluationError (printTree expr)
+    }
+    
+foldConstants :: Stmt -> Eval Stmt
+foldConstants (BStmt (Block stmts)) =
+    folded <- mapM foldConstants stmts
+    return $ BStmt $ Block folded
+foldConstants (Ass ident expr) = updateStmtIfPossible expr (Ass ident)
+foldConstants (Ret expr) = updateStmtIfPossible expr Ret
+foldConstants (SExpr expr
+
+foldConstants :: [Stmt] -> Eval [Stmt]
+foldConstants [] = return []
+foldConstants (stmt:stmts) = return 
+
+foldConstants :: TopDef -> Eval ()
+
+checkStmtForReturn :: Stmt -> Eval Bool
 checkStmtForReturn (Ret _ ) = return True
 checkStmtForReturn VRet = return True
 checkStmtForReturn (BStmt block) = checkBlockForReturn block
 checkStmtForReturn (Cond expr stmt) = do {
         -- after type checking
-        BoolVal b <- evalConstExpr expr;
+        BoolConst b <- evalConstExpr expr;
         if b == True then
             checkStmtForReturn stmt
         else 
@@ -318,7 +398,7 @@ checkStmtForReturn (Cond expr stmt) = do {
 checkStmtForReturn (While expr stmt) = checkStmtForReturn (Cond expr stmt)
 checkStmtForReturn (CondElse expr stmt1 stmt2) = do {
         -- after type checking
-        BoolVal b <- evalConstExpr expr;
+        BoolConst b <- evalConstExpr expr;
         if b == True then
             checkStmtForReturn stmt1
         else
@@ -330,11 +410,11 @@ checkStmtForReturn (CondElse expr stmt1 stmt2) = do {
     }
 checkStmtRet _ = return False
 
-checkBlockForReturn :: Block -> TypeEval Bool
+checkBlockForReturn :: Block -> Eval Bool
 checkBlockForReturn (Block []) = return False
 checkBlockForReturn (Block stmts) = checkStmtForReturn $ last stmts
 
-checkBlockForUnreachableCode :: Block -> TypeEval Bool
+checkBlockForUnreachableCode :: Block -> Eval Bool
 checkBlockForUnreachableCode (Block []) = return False
 checkBlockForUnreachableCode (Block (stmt:stmts)) = do
     isUnreachable <- checkStmtForReturn stmt
@@ -343,7 +423,7 @@ checkBlockForUnreachableCode (Block (stmt:stmts)) = do
     else
         checkBlockForUnreachableCode (Block stmts)
 
-checkFunForReturn :: TopDef -> TypeEval ()
+checkFunForReturn :: TopDef -> Eval ()
 checkFunForReturn (FnDef _ ident _ block) = do
     isReturn <- checkBlockForReturn block
     if not isReturn then
@@ -351,7 +431,7 @@ checkFunForReturn (FnDef _ ident _ block) = do
     else
         return ()
 
-checkFunForUnreachableCode :: TopDef -> TypeEval ()
+checkFunForUnreachableCode :: TopDef -> Eval ()
 checkFunForUnreachableCode (FnDef _ ident _ block) = do
     isUnreachable <- checkBlockForUnreachableCode block
     if isUnreachable then
@@ -359,7 +439,7 @@ checkFunForUnreachableCode (FnDef _ ident _ block) = do
     else
         return ()
 
-checkFunction :: TopDef -> TypeEval ()
+checkFunction :: TopDef -> Eval ()
 checkFunction fun@(FnDef type_ _ args block) = do
     env <- declareArgs args
     let env' = prepareBlockCheck env
@@ -374,20 +454,25 @@ checkFunction fun@(FnDef type_ _ args block) = do
             actBlockDepth = (actBlockDepth env) + 1,
             actReturnType = type_
         }
+        declareArgs :: [Arg] -> Eval Env
+        declareArgs [] = ask
+        declareArgs ((Arg type_ ident):args) = do
+            checkIfVarDeclared ident
+            local (declareVar ident type_) (declareArgs args)
 
-checkFunctions :: [TopDef] -> TypeEval ()
+checkFunctions :: [TopDef] -> Eval ()
 checkFunctions topDefinitions = sequence_ $ map checkFunction topDefinitions
 
-checkIfFunDeclared :: Ident -> TypeEval ()
+checkIfFunDeclared :: Ident -> Eval ()
 checkIfFunDeclared ident = do
     env <- ask
     case Map.lookup ident (funEnv env) of
         Just _ -> throwError $ duplicatedFunErr ident
         Nothing -> return ()
 
-declareFunctions :: [TopDef] -> TypeEval Env
+declareFunctions :: [TopDef] -> Eval Env
 declareFunctions [] = ask
-declareFunctions ((FnDef type_ ident args _):defs) = do
+declareFunctions (fun@(FnDef type_ ident args _):defs) = do
     env <- ask
     checkIfFunDeclared ident
     local declareFun (declareFunctions defs)
@@ -396,15 +481,41 @@ declareFunctions ((FnDef type_ ident args _):defs) = do
         declareFun :: Env -> Env
         declareFun env = Env {
             varEnv = varEnv env,
-            funEnv = Map.insert ident (Fun type_ argTypes) (funEnv env),
+            funEnv = Map.insert ident (getType fun) (funEnv env),
             actBlockDepth = actBlockDepth env,
             actReturnType = actReturnType env
         }
 
--- TODO: add declared
--- TODO: check main
+declareBuiltIn :: Eval Env
+declareBuiltIn = do
+    let builtIn = [
+        (Ident "printInt", Fun Void [Int]),
+        (Ident "printString", Fun Void [Str]),
+        (Ident "error", Fun Void []),
+        (Ident "readInt", Fun Int []),
+        (Ident "readString", Fun Str []), 
+    ]
+    local (addFunList builtIn) ask
+    where
+        addFunList :: [(Ident, Type)] -> Env -> Env
+        addFunList funList env = Env {
+            varEnv = varEnv env,
+            funEnv = Map.union (funEnv env) (Map.fromList funList),
+            actBlockDepth = actBlockDepth env,
+            actReturnType = actReturnType env
+        }
 
-checkProgram :: Program -> TypeEval ()
+checkMain :: Eval ()
+checkMain = do
+    env <- ask
+    case Map.lookup (Ident "main") (funEnv env) of
+        Just _ -> return ()
+        Nothing -> throwError "\"main\" function not declared"
+
+checkProgram :: Program -> Eval ()
 checkProgram (Program topDefinitions) = do
-    env <- declareFunctions topDefinitions
-    local (\_ -> env) (checkFunctions topDefinitions)
+    env <- declareBuiltIn
+    env' <- local (\_ -> env) (declareFunctions topDefinitions)
+    checkMain
+    local (\_ -> env') (checkFunctions topDefinitions)
+    sequence $ map (foldConstants topDefinitions)

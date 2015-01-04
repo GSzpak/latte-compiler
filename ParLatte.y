@@ -148,17 +148,17 @@ Expr5 : '-' Expr6 { Neg $2 }
 
 
 Expr4 :: { Expr }
-Expr4 : Expr4 MulOp Expr5 { EMul $1 $2 $3 } 
+Expr4 : MulOp Expr4 Expr5 { EMul $1 $2 $3 } 
   | Expr5 { $1 }
 
 
 Expr3 :: { Expr }
-Expr3 : Expr3 AddOp Expr4 { EAdd $1 $2 $3 } 
+Expr3 : AddOp Expr3 Expr4 { EAdd $1 $2 $3 } 
   | Expr4 { $1 }
 
 
 Expr2 :: { Expr }
-Expr2 : Expr2 RelOp Expr3 { ERel $1 $2 $3 } 
+Expr2 : RelOp Expr2 Expr3 { ERel $1 $2 $3 } 
   | Expr3 { $1 }
 
 
