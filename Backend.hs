@@ -350,26 +350,26 @@ emitExprInstruction (Neg expr) resultReg =
 emitExprInstruction (Not expr) resultReg = do
     val <- emitExprToBlock expr
     return (Bool, NotExpr resultReg val)
-emitExprInstruction (EMul expr1 Times expr2) resultReg =
+emitExprInstruction (EMul Times expr1 expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Mul
-emitExprInstruction (EMul expr1 Div expr2) resultReg =
+emitExprInstruction (EMul Div expr1 expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Div resultReg
-emitExprInstruction (EMul expr1 Mod expr2) resultReg =
+emitExprInstruction (EMul Mod expr1 expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Mod resultReg
 -- Adding is handled separately in emitExpr
-emitExprInstruction (EAdd expr1 Minus expr2) resultReg =
+emitExprInstruction (EAdd Minus expr1 expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Sub resultReg
-emitExprInstruction (ERel expr1 LTH expr2) resultReg =
+emitExprInstruction (ERel LTH expr1 expr2) resultReg =
     emitRelOpInstruction expr1 expr2 LTH resultReg
-emitExprInstruction (ERel expr1 LE expr2) resultReg =
+emitExprInstruction (ERel LE expr1 expr2) resultReg =
     emitRelOpInstruction expr1 expr2 LE resultReg
-emitExprInstruction (ERel expr1 GTH expr2) resultReg =
+emitExprInstruction (ERel GTH expr1 expr2) resultReg =
     emitRelOpInstruction expr1 expr2 GTH resultReg
-emitExprInstruction (ERel expr1 GE expr2) resultReg =
+emitExprInstruction (ERel GE expr1 expr2) resultReg =
     emitRelOpInstruction expr1 expr2 GE resultReg
-emitExprInstruction (ERel expr1 EQU expr2) resultReg =
+emitExprInstruction (ERel EQU expr1 expr2) resultReg =
     emitRelOpInstruction expr1 expr2 EQU resultReg
-emitExprInstruction (ERel expr1 NE expr2) resultReg =
+emitExprInstruction (ERel NE expr1 expr2) resultReg =
     emitRelOpInstruction expr1 expr2 NE resultReg
 
 emitExprToBlock :: Expr -> LabelNum -> Eval ExpVal
@@ -454,7 +454,7 @@ emitExpr (EString string) = do
     registry <- getNextRegistry
     addInstruction $ GetElementPtr registry (llvmStrLen s) name
     return $ ExpVal {repr = Reg registry, type_ = Str}
-emitExpr (EAdd expr1 Plus expr2) = do
+emitExpr (EAdd Plus expr1 expr2) = do
     val1 <- emitExpr e1 
     val2 <- emitExpr e2
     -- after type checking
