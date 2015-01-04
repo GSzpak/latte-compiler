@@ -3,6 +3,7 @@ module Frontend where
 
 import AbsLatte
 import PrintLatte
+import Data.List as List
 import qualified Data.Map as Map
 import Control.Monad.Error
 import Control.Monad.Reader
@@ -11,7 +12,6 @@ import Text.Printf
 
 class Typable a where
     getType :: a -> Type
-
 
 type BlockDepth = Integer
 data VarEnvElem = VarEnvElem {type_ :: Type, blockDepth :: BlockDepth}
@@ -38,6 +38,7 @@ data Env = Env {
     actBlockDepth :: BlockDepth,
     actReturnType :: Type
 }
+
 type Eval a = ReaderT Env (ErrorT String IO) a
 
 
@@ -120,10 +121,10 @@ evalExprType ELitFalse = return Bool
 evalExprType (EString _) = return Str
 evalExprType (Neg expr) = checkExprType expr Int
 evalExprType (Not expr) = checkExprType expr Bool
-evalExprType (EMul expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int]
-evalExprType (EAdd expr1 Plus expr2) = checkTwoArgExpression expr1 expr2 [Int, Str]
-evalExprType (EAdd expr1 Minus expr2) = checkTwoArgExpression expr1 expr2 [Int]
-evalExprType (ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str]
+evalExprType (EMul _ expr1 expr2) = checkTwoArgExpression expr1 expr2 [Int]
+evalExprType (EAdd Plus expr1 expr2) = checkTwoArgExpression expr1 expr2 [Int, Str]
+evalExprType (EAdd Minus expr1 expr2) = checkTwoArgExpression expr1 expr2 [Int]
+evalExprType (ERel _ expr1 expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str]
 evalExprType (EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool]
 evalExprType (EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool]
 evalExprType (EApp ident arguments) = do
@@ -233,6 +234,8 @@ checkBlock (Block statements) = checkStatements statements
 -- Expression evaluation is run after type checking.
 -- Throws error if evaluation is not possible during compilation.
 
+{-
+
 data ExprConst = IntConst Integer | BoolConst Bool | StrConst String
 
 instance Eq ExprConst where
@@ -312,6 +315,7 @@ evalCompareExpr e1 e2 oper = do
     val1 <- evalConstExpr e1
     val2 <- evalConstExpr e2
     return $ BoolConst $ oper val1 val2
+-}
 
 isConstant :: Expr -> Bool
 isConstant (ELitInt _) = True
@@ -333,7 +337,26 @@ apply (ElitInt n1) (ElitInt n2) fun = ElitInt $ fun n1 n2
 apply (EString s1) (EString s2) fun = EString $ fun s1 s2
 apply boolExpr1 boolExpr2 fun = exprFromBool $ fun (boolFromExpr boolExpr1) (boolFromExpr boolExpr2)
 
-foldBinOpExpr 
+foldBinOpExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (a -> a -> a) -> Eval Expr
+foldBinOpExpr expr1 expr2 constructor fun =
+    folded1 <- foldBinOpExpr expr1
+    folded2 <- foldBinOpExpr expr2
+    if (isConstant folded1 && isConstant folded2) then
+        return $ apply folded1 folded2 fun
+    else
+        return $ constructor folded1 folded2
+
+foldBinOpWithDivCheck :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Integer -> Integer -> Integer) -> Eval Expr
+foldBinOpWithDivCheck e1 e2 constructor fun = do
+    folded1 <- foldBinOpExpr e1
+    folded2 <- foldBinOpExpr e2
+    case (folded1, folded2) of
+        (ELitInt n1, ELitInt n2) ->
+            (if n2 == 0 then
+                throwError "Division by zero"
+            else
+                return $ fun n1 n2)
+        _ -> return $ constructor folded1 folded2
 
 foldConstExpr :: Expr -> Eval Expr
 foldConstExpr (EVar ident) = return $ EVar ident
@@ -354,65 +377,110 @@ foldConstExpr (Neg expr) = do
 foldConstExpr (EApp ident exprs) = do
     foldedArgs <- mapM $ foldConstExpr exprs
     return $ EApp ident foldedArgs
-foldConstExpr expr@(EMul e1 Times e2) = do
+foldConstExpr (EMul Times e1 e2) = foldBinOpExpr e1 e2 (EMul Times) (*)
+foldConstExpr (EMul Div e1 e2) = foldBinOpWithDivCheck e1 e2 (EMul Div) (/)
+foldConstExpr (EMul Mod e1 e2) = foldBinOpWithDivCheck e1 e2 (Emul Mod) (`mod`)
+foldConstExpr (EAdd Plus e1 e2) = do
     folded1 <- foldConstExpr e1
     folded2 <- foldConstExpr e2
+    case (folded1, folded2) of 
+        EString s1, EString s2 -> return $ s1 ++ s2
+        ELitInt n1, ELitInt n2 -> return $ n1 + n2
+        _ -> return $ EAdd Plus folded1 folded2
+foldConstExpr (EAdd Minus e1 e2) = foldBinOpExpr e1 e2 (EAdd Minus) (-) 
+foldConstExpr (EAnd e1 e2) = foldBinOpExpr e1 e2 EAnd (&&)
+foldConstExpr (EOr e1 e2) = foldBinOpExpr e1 e2 EOr (||)
+foldConstExpr (ERel LTH e1 e2) = foldBinOpExpr e1 e2 (ERel LTH) (<)
+foldConstExpr (ERel LE e1 e2) = foldBinOpExpr e1 e2 (ERel LE) (<=)
+foldConstExpr (ERel GTH e1 e2) = foldBinOpExpr e1 e2 (ERel GTH) (>)
+foldConstExpr (ERel GE e1 e2) = foldBinOpExpr e1 e2 (ERel GE) (>=)
+foldConstExpr (ERel EQU e1 e2) = foldBinOpExpr e1 e2 (ERel EQU) (==)
+foldConstExpr (ERel NE e1 e2) = foldBinOpExpr e1 e2 (ERel NE) (/=)
 
-
-updateStmtIfPossible :: Expr -> (Expr -> Stmt) -> Eval Stmt
-updateStmtIfPossible expr stmtConstructor = do {
-        val <- evalConstExpr expr;
-        return $ stmtConstructor $ getExpFromConst val
-    } `catchError` (\message -> do {
-        case message of
-            evaluationNotPossible -> return $ stmtConstructor expr
-            evaluationError -> throwError "%s in expression %s" evaluationError (printTree expr)
-    }
-    
 foldConstants :: Stmt -> Eval Stmt
-foldConstants (BStmt (Block stmts)) =
+foldConstants (BStmt block) = foldConstantsInBlock block
+foldConstants (Ass ident expr) = do 
+    folded <- foldConstExpr expr
+    return $ Add ident folded
+foldConstants (Ret expr) = do
+    folded <- foldConstExpr expr
+    return $ Ret folded
+foldConstants (Cond expr stmt) = do
+    folded <- foldConstExpr expr
+    return $ Cond folded stmt
+foldConstants (CondElse expr stmt1 stmt2) = do
+    folded <- foldConstExpr expr
+    return $ CondElse folded stmt1 stmt2
+foldConstants (While expr stmt) = do
+    folded <- foldConstExpr expr
+    return $ While folded stmt
+foldConstants (SExpr expr) = do
+    folded <- foldConstExpr expr
+    return $ SExpr expr
+
+foldConstantsInBlock :: Block -> Eval Block
+foldConstantsInBlock (Block stmts) = do
     folded <- mapM foldConstants stmts
-    return $ BStmt $ Block folded
-foldConstants (Ass ident expr) = updateStmtIfPossible expr (Ass ident)
-foldConstants (Ret expr) = updateStmtIfPossible expr Ret
-foldConstants (SExpr expr
+    return $ Block folded
 
-foldConstants :: [Stmt] -> Eval [Stmt]
-foldConstants [] = return []
-foldConstants (stmt:stmts) = return 
-
-foldConstants :: TopDef -> Eval ()
-
-checkStmtForReturn :: Stmt -> Eval Bool
-checkStmtForReturn (Ret _ ) = return True
-checkStmtForReturn VRet = return True
-checkStmtForReturn (BStmt block) = checkBlockForReturn block
-checkStmtForReturn (Cond expr stmt) = do {
-        -- after type checking
-        BoolConst b <- evalConstExpr expr;
-        if b == True then
-            checkStmtForReturn stmt
-        else 
-            return False
-    } `catchError` (\_ -> return False)
-checkStmtForReturn (While expr stmt) = checkStmtForReturn (Cond expr stmt)
-checkStmtForReturn (CondElse expr stmt1 stmt2) = do {
-        -- after type checking
-        BoolConst b <- evalConstExpr expr;
-        if b == True then
-            checkStmtForReturn stmt1
+-- Deletes unreachable statements
+optimizeStmt :: Stmt -> Stmt
+optimizeStmt Empty = Empty
+optimizeStmt (BStmt block) = BStmt $ optimizeBlock block
+optimizeStmt (Cond expr stmt) = case expr of
+    ELitTrue -> optimizeStmt stmt
+    ELitFalse -> Empty
+    _ -> Cond expr (optimizeStmt stmt)
+optimizeStmt (CondElse expr stmt1 stmt2) = case expr of
+    ELitTrue -> optimizeStmt stmt1
+    ELitFalse -> optimizeStmt stmt2
+    _ -> CondElse expr (optimizeStmt stmt1) (optimizeStmt stmt2)
+optimizeStmt (While expr stmt) = case expr of
+    ELitFalse -> Empty
+    ELitTrue -> 
+        (if hasReturn optimizedBody then
+            optimizedBody
         else
-            checkStmtForReturn stmt2
-    } `catchError` \_ -> do {
-        retInFirst <- checkStmtForReturn stmt1;
-        retInSecond <- checkStmtForReturn stmt2;
-        return $ retInFirst && retInSecond
-    }
-checkStmtRet _ = return False
+            While expr optimizedBody)
+    _ -> While expr optimizedBody
+    where
+        optimizedBody = optimizeStmt stmt
 
-checkBlockForReturn :: Block -> Eval Bool
-checkBlockForReturn (Block []) = return False
-checkBlockForReturn (Block stmts) = checkStmtForReturn $ last stmts
+optimizeBlock :: Block -> Block
+optimizeBlock (Block stmts) = do
+    let
+        optimized = filter (/= Empty) (map optimizeStmt stmts)
+    case List.findIndex hasReturn optimized of
+        Nothing -> Block optimized
+        Just index -> Block $ take (index + 1) optimized
+
+-- Checked after deleting unreachable code
+hasReturn :: Stmt -> Bool
+hasReturn (Ret _) = True
+hasReturn VRet = True
+hasReturn (CondElse _ stmt1 stmt2) = (hasReturn stmt1) && (hasReturn stmt2)
+hasReturn _ = False
+
+-- After deleting unnecessary statements
+{-
+checkStmtForReturn :: Stmt -> Bool
+checkStmtForReturn (Ret _ ) = True
+checkStmtForReturn VRet = True
+checkStmtForReturn (BStmt block) = checkBlockForReturn block
+checkStmtForReturn (Cond expr stmt) =
+    case expr of
+        ELitTrue -> checkStmtForReturn stmt
+        _ -> False
+checkStmtForReturn (While expr stmt) = checkStmtForReturn (Cond expr stmt)
+checkStmtForReturn (CondElse expr stmt1 stmt2) =
+    case expr of
+        ELitTrue -> checkStmtForReturn stmt1
+        ELitFalse -> checkStmtForReturn stmt2
+        _ -> (checkStmtForReturn stmt1) && (checkStmtForReturn stmt2)
+checkStmtForReturn _ = False
+
+checkBlockForReturn :: Block -> Bool
+checkBlockForReturn (Block stmts) = any checkStmtForReturn stmts
 
 checkBlockForUnreachableCode :: Block -> Eval Bool
 checkBlockForUnreachableCode (Block []) = return False
@@ -438,14 +506,19 @@ checkFunForUnreachableCode (FnDef _ ident _ block) = do
         throwError $ printf "Unreachable code in function %s" (name ident)
     else
         return ()
+-}
 
-checkFunction :: TopDef -> Eval ()
-checkFunction fun@(FnDef type_ _ args block) = do
+checkFunction :: TopDef -> Eval TopDef
+checkFunction fun@(FnDef type_ ident args block) = do
     env <- declareArgs args
     let env' = prepareBlockCheck env
     local (\_ -> env') (checkBlock block)
-    checkFunForUnreachableCode fun
-    checkFunForReturn fun
+    foldedConstants <- foldConstantsInBlock block
+    let (Block optimized) = optimizeBlock foldedConstants
+    if not (any hasReturn optimized) then
+        throwError $ printf "No \"return\" instruction in function %s" (name ident)
+    else
+        return $ FnDef type_ ident args (Block optimized)
     where
         prepareBlockCheck :: Env -> Env
         prepareBlockCheck env = Env {
@@ -459,9 +532,6 @@ checkFunction fun@(FnDef type_ _ args block) = do
         declareArgs ((Arg type_ ident):args) = do
             checkIfVarDeclared ident
             local (declareVar ident type_) (declareArgs args)
-
-checkFunctions :: [TopDef] -> Eval ()
-checkFunctions topDefinitions = sequence_ $ map checkFunction topDefinitions
 
 checkIfFunDeclared :: Ident -> Eval ()
 checkIfFunDeclared ident = do
@@ -512,10 +582,10 @@ checkMain = do
         Just _ -> return ()
         Nothing -> throwError "\"main\" function not declared"
 
-checkProgram :: Program -> Eval ()
+checkProgram :: Program -> Eval Program
 checkProgram (Program topDefinitions) = do
     env <- declareBuiltIn
     env' <- local (\_ -> env) (declareFunctions topDefinitions)
     checkMain
-    local (\_ -> env') (checkFunctions topDefinitions)
-    sequence $ map (foldConstants topDefinitions)
+    optimizedTopDefs <- local (\_ -> env') (mapM checkFunction topDefinitions)
+    return $ Program optimizedTopDefs
