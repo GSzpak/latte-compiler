@@ -218,8 +218,8 @@ checkStmt (CondElse expr ifStmt elseStmt) = do
 checkStmt (While expr stmt) = do
     checkExprType expr Bool
     checkStmt stmt
-checkStmt (SExpr _) = do
-    evalExprType
+checkStmt (SExp expr) = do
+    evalExprType expr
     ask
 
 checkStatements :: [Stmt] -> Eval Env
@@ -332,30 +332,25 @@ boolFromExpr :: Expr -> Bool
 boolFromExpr ELitTrue = True
 boolFromExpr ELitFalse = False
 
-apply :: Expr -> Expr -> (a -> a -> a) -> Expr
-apply (ElitInt n1) (ElitInt n2) fun = ElitInt $ fun n1 n2
-apply (EString s1) (EString s2) fun = EString $ fun s1 s2
-apply boolExpr1 boolExpr2 fun = exprFromBool $ fun (boolFromExpr boolExpr1) (boolFromExpr boolExpr2)
-
-foldBinOpExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (a -> a -> a) -> Eval Expr
-foldBinOpExpr expr1 expr2 constructor fun =
-    folded1 <- foldBinOpExpr expr1
-    folded2 <- foldBinOpExpr expr2
+foldBoolExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Bool -> Bool -> Bool) -> Eval Expr
+foldBoolExpr expr1 expr2 constructor fun = do
+    folded1 <- foldConstExpr expr1
+    folded2 <- foldConstExpr expr2
     if (isConstant folded1 && isConstant folded2) then
-        return $ apply folded1 folded2 fun
+        return $ exprFromBool $ fun (boolFromExpr folded1) (boolFromExpr folded2)
     else
         return $ constructor folded1 folded2
 
-foldBinOpWithDivCheck :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Integer -> Integer -> Integer) -> Eval Expr
-foldBinOpWithDivCheck e1 e2 constructor fun = do
-    folded1 <- foldBinOpExpr e1
-    folded2 <- foldBinOpExpr e2
+foldBinOpExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Integer -> Integer -> Integer) -> Bool -> Eval Expr
+foldBinOpExpr e1 e2 constructor fun checkDivision = do
+    folded1 <- foldConstExpr e1
+    folded2 <- foldConstExpr e2
     case (folded1, folded2) of
         (ELitInt n1, ELitInt n2) ->
-            (if n2 == 0 then
+            (if checkDivision && n2 == 0 then
                 throwError "Division by zero"
             else
-                return $ fun n1 n2)
+                return $ ELitInt $ fun n1 n2)
         _ -> return $ constructor folded1 folded2
 
 foldConstExpr :: Expr -> Eval Expr
@@ -367,41 +362,44 @@ foldConstExpr (EString s) = return $ EString s
 foldConstExpr (Not expr) = do
     folded <- foldConstExpr expr
     case folded of
-        ELitTrue = return ELitFalse
-        ELitFalse = return ELitTrue
-        expr = return (Not expr)
+        ELitTrue -> return ELitFalse
+        ELitFalse -> return ELitTrue
+        expr -> return (Not expr)
 foldConstExpr (Neg expr) = do
     folded <- foldConstExpr expr
     case folded of
-        ELitInt n = return $ ElitInt (-n)
+        ELitInt n -> return $ ELitInt (-n)
+        expr -> return (Neg expr)
 foldConstExpr (EApp ident exprs) = do
-    foldedArgs <- mapM $ foldConstExpr exprs
+    foldedArgs <- mapM foldConstExpr exprs
     return $ EApp ident foldedArgs
-foldConstExpr (EMul Times e1 e2) = foldBinOpExpr e1 e2 (EMul Times) (*)
-foldConstExpr (EMul Div e1 e2) = foldBinOpWithDivCheck e1 e2 (EMul Div) (/)
-foldConstExpr (EMul Mod e1 e2) = foldBinOpWithDivCheck e1 e2 (Emul Mod) (`mod`)
+foldConstExpr (EMul Times e1 e2) = foldBinOpExpr e1 e2 (EMul Times) (*) False 
+foldConstExpr (EMul Div e1 e2) = foldBinOpExpr e1 e2 (EMul Div) div True
+foldConstExpr (EMul Mod e1 e2) = foldBinOpExpr e1 e2 (EMul Mod) mod True
 foldConstExpr (EAdd Plus e1 e2) = do
     folded1 <- foldConstExpr e1
     folded2 <- foldConstExpr e2
     case (folded1, folded2) of 
-        EString s1, EString s2 -> return $ s1 ++ s2
-        ELitInt n1, ELitInt n2 -> return $ n1 + n2
+        (EString s1, EString s2) -> return $ EString $ s1 ++ s2
+        (ELitInt n1, ELitInt n2) -> return $ ELitInt $ n1 + n2
         _ -> return $ EAdd Plus folded1 folded2
-foldConstExpr (EAdd Minus e1 e2) = foldBinOpExpr e1 e2 (EAdd Minus) (-) 
-foldConstExpr (EAnd e1 e2) = foldBinOpExpr e1 e2 EAnd (&&)
-foldConstExpr (EOr e1 e2) = foldBinOpExpr e1 e2 EOr (||)
-foldConstExpr (ERel LTH e1 e2) = foldBinOpExpr e1 e2 (ERel LTH) (<)
-foldConstExpr (ERel LE e1 e2) = foldBinOpExpr e1 e2 (ERel LE) (<=)
-foldConstExpr (ERel GTH e1 e2) = foldBinOpExpr e1 e2 (ERel GTH) (>)
-foldConstExpr (ERel GE e1 e2) = foldBinOpExpr e1 e2 (ERel GE) (>=)
-foldConstExpr (ERel EQU e1 e2) = foldBinOpExpr e1 e2 (ERel EQU) (==)
-foldConstExpr (ERel NE e1 e2) = foldBinOpExpr e1 e2 (ERel NE) (/=)
+foldConstExpr (EAdd Minus e1 e2) = foldBinOpExpr e1 e2 (EAdd Minus) (-) False
+foldConstExpr (EAnd e1 e2) = foldBoolExpr e1 e2 EAnd (&&)
+foldConstExpr (EOr e1 e2) = foldBoolExpr e1 e2 EOr (||)
+foldConstExpr (ERel LTH e1 e2) = foldBoolExpr e1 e2 (ERel LTH) (<)
+foldConstExpr (ERel LE e1 e2) = foldBoolExpr e1 e2 (ERel LE) (<=)
+foldConstExpr (ERel GTH e1 e2) = foldBoolExpr e1 e2 (ERel GTH) (>)
+foldConstExpr (ERel GE e1 e2) = foldBoolExpr e1 e2 (ERel GE) (>=)
+foldConstExpr (ERel EQU e1 e2) = foldBoolExpr e1 e2 (ERel EQU) (==)
+foldConstExpr (ERel NE e1 e2) = foldBoolExpr e1 e2 (ERel NE) (/=)
 
 foldConstants :: Stmt -> Eval Stmt
-foldConstants (BStmt block) = foldConstantsInBlock block
+foldConstants (BStmt block) = do
+    folded <- foldConstantsInBlock block
+    return $ BStmt folded
 foldConstants (Ass ident expr) = do 
     folded <- foldConstExpr expr
-    return $ Add ident folded
+    return $ Ass ident folded
 foldConstants (Ret expr) = do
     folded <- foldConstExpr expr
     return $ Ret folded
@@ -414,9 +412,9 @@ foldConstants (CondElse expr stmt1 stmt2) = do
 foldConstants (While expr stmt) = do
     folded <- foldConstExpr expr
     return $ While folded stmt
-foldConstants (SExpr expr) = do
+foldConstants (SExp expr) = do
     folded <- foldConstExpr expr
-    return $ SExpr expr
+    return $ SExp expr
 
 foldConstantsInBlock :: Block -> Eval Block
 foldConstantsInBlock (Block stmts) = do
@@ -557,15 +555,16 @@ declareFunctions (fun@(FnDef type_ ident args _):defs) = do
         }
 
 declareBuiltIn :: Eval Env
-declareBuiltIn = do
-    let builtIn = [
-        (Ident "printInt", Fun Void [Int]),
-        (Ident "printString", Fun Void [Str]),
-        (Ident "error", Fun Void []),
-        (Ident "readInt", Fun Int []),
-        (Ident "readString", Fun Str []), 
-    ]
-    local (addFunList builtIn) ask
+declareBuiltIn =
+    let
+        builtIn = 
+            [(Ident "printInt", Fun Void [Int]),
+            (Ident "printString", Fun Void [Str]),
+            (Ident "error", Fun Void []),
+            (Ident "readInt", Fun Int []),
+            (Ident "readString", Fun Str [])]
+    in 
+        local (addFunList builtIn) ask
     where
         addFunList :: [(Ident, Type)] -> Env -> Env
         addFunList funList env = Env {

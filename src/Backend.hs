@@ -19,7 +19,7 @@ type LabelNum = Integer
 data ExpValRepr =
     RegVal Name |
     NumVal Integer |
-    BoolVal Bool |
+    BoolVal Bool
 
 instance Show ExpValRepr where
     show (RegVal name) = name
@@ -35,14 +35,14 @@ data ExpVal = ExpVal {
 instance Show ExpVal where
     show val = printf "%s %s" (showLLVMType $ type_ val) (show $ repr val)
 
-data BinOp = Add | Sub | Mul | Div | Mod
+data BinOp = Add | Sub | Mul | DivOp | ModOp
 
 instance Show BinOp where
     show Add = "add"
     show Sub = "sub"
     show Mul = "mul"
-    show Div = "sdiv"
-    show Mod = "srem"
+    show DivOp = "sdiv"
+    show ModOp = "srem"
 
 data Instruction =
     BinOpExpr Registry BinOp ExpVal ExpVal |
@@ -50,7 +50,7 @@ data Instruction =
     NotExpr Registry ExpVal |
     Load Registry Type Registry |
     Call Registry Type Name [ExpVal] |
-    Store ExpVal Registry |
+    StoreInstr ExpVal Registry |
     Alloca Registry Type |
     VoidRet |
     ExpRet ExpVal |
@@ -67,7 +67,7 @@ instance Show Instruction where
             val1Repr = show $ repr val1
             val2Repr = show $ repr val2
         in
-            printf "%s = %s %s %s, %s" result (show binop_) typeRepr val1Repr val2Repr
+            printf "%s = %s %s %s, %s" result (show binop) typeRepr val1Repr val2Repr
     show (RelOpExpr result relop val1 val2) =
         let
             typeRepr = showLLVMType $ type_ val1
@@ -81,14 +81,14 @@ instance Show Instruction where
         printf "%s = load %s* %s" result (showLLVMType type_) reg
     show (Call result type_ fun args) = 
         printf "%s = call %s %s(%s)" result (showLLVMType type_) fun (showFunArgs args)
-    show (Store val reg) =
+    show (StoreInstr val reg) =
         printf "store %s, %s* %s" (show val) (showLLVMType $ type_ val) reg
     show (Alloca reg type_) =
         printf "%s = alloca %s" reg (show type_)
     show VoidRet = "ret void"
-    show (ExpRet val) = "ret %s" (show val)
+    show (ExpRet val) = printf "ret %s" (show val)
     show (CondJump val labelNum1 labelNum2) =
-        "br %s, label %%s, label %s" (show val) ('%':(label labelNum1)) (label labelNum2)
+        printf "br %s, label %%s, label %s" (show val) ('%':(label labelNum1)) (label labelNum2)
     show (Jump labelNum) = printf "br label %%s" (label labelNum)
     show (Phi result type_ exprsFromLabels) = 
         printf "%s = phi %s %s" result (show type_) (showPhiExprs exprsFromLabels)
@@ -103,13 +103,10 @@ instance Show Instruction where
 data LLVMBlock = LLVMBlock {
     labelNum :: LabelNum,
     instructions :: [Instruction],
-    lastInstr :: Maybe Instruction,
+    lastInstr :: Maybe Instruction
 }
 
-data EnvElem = EnvElem {
-    name :: Name,
-    type_ :: Type
-}
+data EnvElem = EnvElem Name Type
 
 type Env = Map.Map Ident EnvElem
 
@@ -120,7 +117,7 @@ data Environment = Environment {
 
 data Store = Store {
     blocks :: Map.Map LabelNum LLVMBlock,
-    actBlockNum :: labelNum
+    actBlockNum :: LabelNum,
     regCounter :: Counter,
     constCounter :: Counter,
     labelCounter :: Counter,
@@ -128,7 +125,7 @@ data Store = Store {
     compiled :: [String]
 }
 
-type Eval a = ReaderT Env (ErrorT String (StateT Store IO)) a
+type Eval a = ReaderT Environment (ErrorT String (StateT Store IO)) a
 
 emptyEnv :: Environment
 emptyEnv = Environment {
@@ -150,11 +147,11 @@ emptyStore = Store {
 runEval :: Environment -> Store -> Eval a -> IO (Either String a, Store)
 runEval env state eval = runStateT (runErrorT (runReaderT eval env)) state
 
-regName :: RegCounter -> Registry
+regName :: Counter -> Registry
 regName regNum = "%r" ++ (show regNum)
 
 globalName :: Ident -> Name
-globalName ident = '@':(name ident)
+globalName (Ident name) = '@':name
 
 constName :: Counter -> Name
 constName strNum = printf "@.str%s" (show strNum)
@@ -244,7 +241,7 @@ getBlock labelNum = do
 getActBlock :: Eval LLVMBlock
 getActBlock = do
     store <- get
-    Just actBlock = Map.lookup (actBlockNum store) (blocks store)
+    let Just actBlock = Map.lookup (actBlockNum store) (blocks store)
     return actBlock
 
 getActBlockNum :: Eval LabelNum
@@ -255,10 +252,10 @@ getActBlockNum = do
 changeBlock :: LabelNum -> (LLVMBlock -> LLVMBlock) -> Eval ()
 changeBlock blockNum updateFun = do
     store <- get
-    let Just actBlock = Map.lookup (blockNum store) (blocks store)
+    let Just actBlock = Map.lookup blockNum (blocks store)
     put $ Store {
-        blocks = Map.insert labelNum (updateFun actBlock),
-        actBlockNum = actBlockNum store
+        blocks = Map.insert blockNum (updateFun actBlock) (blocks store),
+        actBlockNum = actBlockNum store,
         regCounter = regCounter store,
         constCounter = constCounter store,
         labelCounter = labelCounter store,
@@ -287,7 +284,7 @@ setLastInstructionInBlock lastInstr labelNum =
 setLastInstruction :: Instruction -> Eval ()
 setLastInstruction lastInstr = do
     store <- get
-    setLastInstructionInBlock (actBlockNum store) (setLastInBlock lastInstr)
+    setLastInstructionInBlock lastInstr (actBlockNum store)
 
 addNewLLVMBlock :: Eval LabelNum
 addNewLLVMBlock = do
@@ -299,7 +296,7 @@ addNewLLVMBlock = do
         lastInstr = Nothing
     }
     put $ Store {
-        blocks = Map.insert next newBlock,
+        blocks = Map.insert next newBlock (blocks store),
         actBlockNum = next,
         regCounter = regCounter store,
         constCounter = constCounter store,
@@ -313,15 +310,16 @@ emitBinOpInstruction :: Expr -> Expr -> BinOp -> Registry -> Eval (Type, Instruc
 emitBinOpInstruction e1 e2 operator resultReg = do
     val1 <- emitExpr e1
     val2 <- emitExpr e2
-    return (Int, BinOpExpr resultReg operator e1 e2)
+    return (Int, BinOpExpr resultReg operator val1 val2)
 
 emitRelOpInstruction :: Expr -> Expr -> RelOp -> Registry -> Eval (Type, Instruction)
-emitRelOpInstruction e1 e2 RelOp resultReg = do
+emitRelOpInstruction e1 e2 relOp resultReg = do
     val1 <- emitExpr e1
     val2 <- emitExpr e2
-    return (Bool, RelOpExpr resultReg RelOp val1 val2)
+    return (Bool, RelOpExpr resultReg relOp val1 val2)
 
 -- TODO: useless
+{-
 negate :: Expr -> Expr
 negate ELitTrue = ELitFalse
 negate ELitFalse = ELitTrue
@@ -332,6 +330,7 @@ negate (ERel e1 LE e2) = ERel e1 GTH e2
 negate (ERel e1 GTH e2) = ERel e1 LE e2
 negate (ERel e1 EQU e2) = ERel e1 NE e2
 negate (ERel e1 NE e2) = ERel e1 EQU e2
+-}
 
 emitExprInstruction :: Expr -> Registry -> Eval (Type, Instruction)
 emitExprInstruction (EVar ident) resultReg = do
@@ -342,20 +341,20 @@ emitExprInstruction (EVar ident) resultReg = do
 emitExprInstruction (EApp ident args) resultReg = do
     env <- ask
     let Just (EnvElem name t) = Map.lookup ident (funEnv env)
-    argReprs <- mapM emitExprToBlock args
+    argReprs <- mapM emitExpr args
     let instr = Call resultReg t name argReprs
     return (t, instr)
 emitExprInstruction (Neg expr) resultReg =
-    emitExprInstruction (EAdd (ELitInt 0) Minus expr) resultReg
+    emitExprInstruction (EAdd Minus (ELitInt 0) expr) resultReg
 emitExprInstruction (Not expr) resultReg = do
-    val <- emitExprToBlock expr
+    val <- emitExpr expr
     return (Bool, NotExpr resultReg val)
 emitExprInstruction (EMul Times expr1 expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 Mul
+    emitBinOpInstruction expr1 expr2 Mul resultReg
 emitExprInstruction (EMul Div expr1 expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 Div resultReg
+    emitBinOpInstruction expr1 expr2 DivOp resultReg
 emitExprInstruction (EMul Mod expr1 expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 Mod resultReg
+    emitBinOpInstruction expr1 expr2 ModOp resultReg
 -- Adding is handled separately in emitExpr
 emitExprInstruction (EAdd Minus expr1 expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Sub resultReg
@@ -379,30 +378,30 @@ emitExprToBlock (EAnd expr1 expr2) labelNum = do
     val2 <- emitExprToBlock expr2 numTrue
     numNext <- addNewLLVMBlock
     setLastInstructionInBlock (CondJump val1 numTrue numNext) labelNum
-    setLastInstructionInBlock (Jump val2 numNext) numTrue
+    setLastInstructionInBlock (Jump numNext) numTrue
     resultReg <- getNextRegistry
-    addInstructionToBlock (Phi resultReg [(falseExpVal, labelNum), (val2, numTrue)]) numNext
-    return $ ExpVal {repr = Reg resultReg, type_ = Bool}
+    addInstructionToBlock (Phi resultReg Bool [(falseExpVal, labelNum), (val2, numTrue)]) numNext
+    return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock (EOr expr1 expr2) labelNum = do
     val1 <- emitExprToBlock expr1 labelNum
     numFalse <- addNewLLVMBlock
     val2 <- emitExprToBlock expr2 numFalse
     numNext <- addNewLLVMBlock
     setLastInstructionInBlock (CondJump val1 numNext numFalse) labelNum
-    setLastInstructionInBlock (Jump val2 numNext) numFalse
+    setLastInstructionInBlock (Jump numNext) numFalse
     resultReg <- getNextRegistry
-    addInstructionToBlock (Phi resultReg [(trueExpVal, labelNum), (val2, numFalse)]) numNext
-    return $ ExpVal {repr = Reg resultReg, type_ = Bool}
+    addInstructionToBlock (Phi resultReg Bool [(trueExpVal, labelNum), (val2, numFalse)]) numNext
+    return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock expr labelNum = do
     result <- getNextRegistry
     (t, instr) <- emitExprInstruction expr result
-    addInstruction instr labelNum
-    return $ ExpVal {repr = Reg result, type_ = t}
+    addInstructionToBlock instr labelNum
+    return $ ExpVal {repr = RegVal result, type_ = t}
 
 llvmStrLen :: String -> Integer
-llvmStrLen s = (length s) + 1
+llvmStrLen s = (toInteger $ length s) + 1
 
-getStringName :: String -> Name
+getStringName :: String -> Eval Name
 getStringName s = do
     store <- get
     case Map.lookup s (strConstants store) of
@@ -420,83 +419,85 @@ getStringName s = do
             }
             return name
 
-concat :: ExpVal -> ExpVal -> Eval ExpVal
-concat val1 val2 = do
+emitConcat :: ExpVal -> ExpVal -> Eval ExpVal
+emitConcat val1 val2 = do
     (lenReg1, lenVal1) <- getExpVal Int
-    addInstruction $ Call lenReg1 Int (globalName "strlen") [lenVal1]
+    addInstruction $ Call lenReg1 Int (globalName' "strlen") [lenVal1]
     (lenReg2, lenVal2) <- getExpVal Int
-    addInstruction $ Call lenReg2 Int (globalName "strlen") [lenVal2]
+    addInstruction $ Call lenReg2 Int (globalName' "strlen") [lenVal2]
     (tempReg1, tempVal1) <- getExpVal Int
     addInstruction $ BinOpExpr tempReg1 Add lenVal1 (numExpVal 1)
     (tempReg2, tempVal2) <- getExpVal Int
     addInstruction $ BinOpExpr tempReg2 Add tempVal1 lenVal2
     (mallocReg, mallocVal) <- getExpVal Str
-    addInstruction $ Call mallocReg Str (globalName "malloc") [tempVal2]
+    addInstruction $ Call mallocReg Str (globalName' "malloc") [tempVal2]
     (strcpyReg, strcpyVal) <- getExpVal Str
-    addInstruction $ Call strcpyReg Str (globalName "strcpy") [mallocVal, val1]
+    addInstruction $ Call strcpyReg Str (globalName' "strcpy") [mallocVal, val1]
     (strcatReg, strcatVal) <- getExpVal Str
-    addInstruction $ Call strcatReg Str (globalName "strcat") [strcpyVal, val2]
+    addInstruction $ Call strcatReg Str (globalName' "strcat") [strcpyVal, val2]
     return strcatVal
     where
         getExpVal :: Type -> Eval (Registry, ExpVal)
         getExpVal t = do
             reg <- getNextRegistry
-            let val = ExpVal {repr = Reg reg, type_ = t}
+            let val = ExpVal {repr = RegVal reg, type_ = t}
             return $ (reg, val)
+        globalName' :: String -> Name
+        globalName' s = globalName (Ident s)
 
-emitExpr :: Expr -> Eval ExprVal
+emitExpr :: Expr -> Eval ExpVal
 emitExpr (ELitInt n) = return $ numExpVal n
 emitExpr ELitTrue = return $ boolExpVal True
 emitExpr ELitFalse = return $ boolExpVal False
-emitExpr (EString string) = do
+emitExpr (EString s) = do
     store <- get
     name <- getStringName s
     registry <- getNextRegistry
     addInstruction $ GetElementPtr registry (llvmStrLen s) name
-    return $ ExpVal {repr = Reg registry, type_ = Str}
+    return $ ExpVal {repr = RegVal registry, type_ = Str}
 emitExpr (EAdd Plus expr1 expr2) = do
-    val1 <- emitExpr e1 
-    val2 <- emitExpr e2
+    val1 <- emitExpr expr1 
+    val2 <- emitExpr expr2
     -- after type checking
     case type_ val1 of
-        Str -> concat val1 val2
+        Str -> emitConcat val1 val2
         Int -> do
             resultReg <- getNextRegistry
             addInstruction $ BinOpExpr resultReg Add val1 val2
-            return $ ExpVal {repr = Reg resultReg, type_ = Int}
+            return $ ExpVal {repr = RegVal resultReg, type_ = Int}
 emitExpr expr = do
     actBlock <- getActBlockNum
     emitExprToBlock expr actBlock
 
-emitDeclarations :: Type -> [Item] -> [Instruction] -> Eval (Env, [Instruction])
+emitDeclarations :: Type -> [Item] -> [Instruction] -> Eval (Environment, [Instruction])
 emitDeclarations type_ [] accu = do
     env <- ask
     return (env, accu)
-emitDeclarations type_ (item:items) accu = case item of
+emitDeclarations t (item:items) accu = case item of
     Init ident expr -> (do
-        val <- emitExprToBlock expr
+        val <- emitExpr expr
         (env, updatedAccu) <- declareItem ident val accu
-        local (\_ -> env) (emitDeclarations type_ items updatedAccu)
+        local (\_ -> env) (emitDeclarations t items updatedAccu))
     NoInit ident -> do
-        emptyStrReg <- getEmptyStrReg
-        let val = (case type_ of
-            Int -> numExpVal 0
-            Bool -> falseExpVal
-            Str -> ExpVal {repr = RegVal emptyStrReg, type_ = Str})
+        emptyStrReg <- getStringName ""
+        val <- case t of
+            Int -> return $ numExpVal 0
+            Bool -> return falseExpVal
+            Str -> return $ ExpVal {repr = RegVal emptyStrReg, type_ = Str}
         (env, updatedAccu) <- declareItem ident val accu
-        local (\_ -> env) (emitDeclarations type_ items updatedAccu)
+        local (\_ -> env) (emitDeclarations t items updatedAccu)
     where
-        declareItem :: Ident -> ExpVal -> [Instruction] -> Eval (Env, [Instruction])
+        declareItem :: Ident -> ExpVal -> [Instruction] -> Eval (Environment, [Instruction])
         declareItem ident val accu = do
             env <- ask
             reg <- getNextRegistry
             let env' = Environment {
-                varEnv = Map.insert ident reg (varEnv env)
-                procEnv = procEnv env
+                varEnv = Map.insert ident (EnvElem reg t) (varEnv env),
+                funEnv = funEnv env
             }
-            let alloca = Alloca reg (type_ val)
-            let store = Store val reg
-            return (env, (store:(alloca:accu))
+            let alloca = Alloca reg t
+            let store = StoreInstr val reg
+            return (env, (store:(alloca:accu)))
 
 emitCondExpr :: Expr -> LabelNum -> LabelNum -> LabelNum -> Eval ()
 emitCondExpr (EAnd e1 e2) actBlock trueBlock falseBlock = do
@@ -508,29 +509,29 @@ emitCondExpr (EOr e1 e2) actBlock trueBlock falseBlock = do
     emitCondExpr e1 actBlock trueBlock firstFalse
     emitCondExpr e2 firstFalse trueBlock falseBlock
 emitCondExpr expr actBlock trueBlock falseBlock = do
-    val <- emitExpr expr actBlock
+    val <- emitExprToBlock expr actBlock
     setLastInstructionInBlock (CondJump val trueBlock falseBlock) actBlock
 
 emitStmt :: Stmt -> Eval Environment
-emitStmt Empty = return ()
+emitStmt Empty = ask
 emitStmt (BStmt block) = emitBlock block
 emitStmt (Ass ident expr) = do
     env <- ask
-    val <- emitExprToBlock expr
-    Just reg t = Map.lookup ident (varEnv env)
-    addInstruction $ Store val reg
+    val <- emitExpr expr
+    let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
+    addInstruction $ StoreInstr val reg
     ask
 emitStmt (Decl type_ items) = do
     (env, instructions) <- emitDeclarations type_ items []
     addInstructions instructions
     return env
 emitStmt (Incr ident) =
-    emitStmt $ EAss ident (EAdd (EVar ident) Plus (ELitInt 1))
+    emitStmt $ Ass ident (EAdd Plus (EVar ident) (ELitInt 1))
 emitStmt (Decr ident) =
-    emitStmtInstr $ EAss ident (EAdd (EVar ident) Minus (ELitInt 1))
+    emitStmt $ Ass ident (EAdd Minus (EVar ident) (ELitInt 1))
 emitStmt (Ret expr) = do
-    val <- emitExprToBlock
-    setLastInstruction $ ExprRet val
+    val <- emitExpr expr
+    setLastInstruction $ ExpRet val
     ask
 emitStmt VRet = do
     setLastInstruction VoidRet
@@ -540,8 +541,8 @@ emitStmt (Cond expr stmt) = do
     trueBlockNum <- addNewLLVMBlock
     emitStmt stmt
     afterBlockNum <- addNewLLVMBlock
-    emitCondExpr actBlock trueBlockNum afterBlockNum
-    setLastIfNecessary trueBlockNum (Jump afterBlock) 
+    emitCondExpr expr actBlockNum trueBlockNum afterBlockNum
+    setLastIfNecessary trueBlockNum (Jump afterBlockNum) 
     ask
     where
         setLastIfNecessary :: LabelNum -> Instruction -> Eval ()
@@ -556,7 +557,7 @@ emitStmt (CondElse expr stmt1 stmt2) = do
     emitStmt stmt1
     falseBlockNum <- addNewLLVMBlock
     emitStmt stmt2
-    emitCondExpr expr actBlock trueBlockNum falseBlockNum
+    emitCondExpr expr actBlockNum trueBlockNum falseBlockNum
     newBlock <- jumpToNewBlock trueBlockNum
     case newBlock of
         Nothing -> ask
@@ -574,16 +575,18 @@ emitStmt (CondElse expr stmt1 stmt2) = do
                     setLastInstructionInBlock (Jump newBlock) blockNum
                     return $ Just newBlock
 emitStmt (While expr stmt) = do
-    actBlock <- getActBlock
-    loopNum <- addNewLLVMBlock
+    actBlockNum <- getActBlockNum
+    loopBodyNum <- addNewLLVMBlock
     emitStmt stmt
     -- TODO: while(true) { return 1;}
     loopCondNum <- addNewLLVMBlock
-    setLastInstructionInBlock (Jump loopCondNum) actBlock
+    setLastInstructionInBlock (Jump loopCondNum) actBlockNum
     afterLoop <- addNewLLVMBlock
-    emitCondExpr expr actBlock loop afterLoop
+    emitCondExpr expr actBlockNum loopBodyNum afterLoop
     ask
-emitStmt (SExpr expr) = emitExpr expr
+emitStmt (SExp expr) = do 
+    emitExpr expr
+    ask
 
 emitStmts :: [Stmt] -> Eval Environment
 emitStmts [] = ask
@@ -596,7 +599,7 @@ emitBlock (Block stmts) = do
     emitStmts stmts
 
 addCompiled :: [String] -> Eval ()
-addCompiled compiledInstructions =  
+addCompiled compiledInstructions =  do
     store <- get
     put $ Store {
         blocks = blocks store,
@@ -613,25 +616,27 @@ identReg (Ident name) = '%':name
 
 showLLVMArgs :: [Arg] -> String
 showLLVMArgs args = printWithSeparator (map showLLVMArg args) ","
-where
-    showLLVMArg :: Arg -> String
-    showLLVMArg (Arg type_ ident) = printf "%s %s" (showLLVMType type_) (identReg ident)
+    where
+        showLLVMArg :: Arg -> String
+        showLLVMArg (Arg type_ ident) = printf "%s %s" (showLLVMType type_) (identReg ident)
 
 addArgs :: [Arg] -> Eval Environment
 addArgs [] = ask
-addArgs ((Arg _ ident):args) = do
+addArgs ((Arg type_ ident):args) = do
     local addArg (addArgs args)
     where
         addArg :: Environment -> Environment
         addArg env = Environment {
-            varEnv = Map.insert ident (identReg ident) (varEnv env)
+            varEnv = Map.insert ident (EnvElem (identReg ident) type_) (varEnv env),
             funEnv = funEnv env
         }
 
 compileBlock :: LLVMBlock -> [String]
-compileBlock block = ["", formatInstr $ lastInstr block] ++ (map formatInstr (instructions block))
-    formatInstr :: Instruction -> String
-    formatInstr instr = printf "      %s" (show instr)
+compileBlock block = ["", formatInstr $ lastInstruction] ++ (map formatInstr (instructions block))
+    where
+        Just lastInstruction = lastInstr block
+        formatInstr :: Instruction -> String
+        formatInstr instr = printf "      %s" (show instr)
 
 compileBlocksInstructions :: Eval ()
 compileBlocksInstructions = do
@@ -644,7 +649,7 @@ compileBlocksInstructions = do
         constCounter = constCounter store,
         labelCounter = labelCounter store,
         strConstants = strConstants store,
-        compiled = compiledInstructions ++ (compiled store)
+        compiled = compiled store
     }
     where
         compileBlockWithLabel :: (LabelNum, LLVMBlock) -> Eval ()
@@ -680,17 +685,16 @@ reverseInstructions = do
 addOuterDefinitions :: Eval ()
 addOuterDefinitions = addCompiled $ map show declarations
     where
-        declarations = [
-            FunDecl "printInt" Void [Int],
-            FunDecl "printString" Void [Str]
+        declarations =
+            [FunDecl "printInt" Void [Int],
+            FunDecl "printString" Void [Str],
             FunDecl "error" Void [],
             FunDecl "readInt" Int [],
             FunDecl "readString" Str [],
             FunDecl "malloc" Str [Int],
             FunDecl "strlen" Int [Str],
             FunDecl "strcpy" Str [Str, Str],
-            FunDecl "strcat" Str [Str, Str]
-        ]
+            FunDecl "strcat" Str [Str, Str]]
 
 addStringsDefinitions :: Eval ()
 addStringsDefinitions = do
@@ -699,11 +703,11 @@ addStringsDefinitions = do
     where
         getStringDecl :: (String, Name) -> String
         getStringDecl (s, name) =
-            printf "%s = private constant [%s x i8] c\"%s\00\"" name (llvmStrLen s) (map llvmFormat s)
-        llvmFormat :: Char -> Char
-        llvmFormat '\t' = '\09'
-        llvmFormat '\n' = '\0A'
-        llvmFormat c = c
+            printf "%s = private constant [%s x i8] c\"%s\00\"" name (llvmStrLen s) (concat $ map llvmFormat s)
+        llvmFormat :: Char -> String
+        llvmFormat '\t' = "\09"
+        llvmFormat '\n' = "\0a"
+        llvmFormat c = [c]
 
 emitProgram :: Program -> Eval ()
 emitProgram (Program topDefs) = do

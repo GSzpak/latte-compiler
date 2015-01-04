@@ -11,7 +11,7 @@ import LexLatte
 import ParLatte
 import ErrM
 import qualified Frontend(runEval, checkProgram, emptyEnv)
-import Backend(runEval, emitProgram, emptyEnv, emptyStore)
+import qualified Backend(runEval, emitProgram, emptyEnv, emptyStore, compiled)
 
 
 exitWithError :: String -> IO ()
@@ -22,13 +22,12 @@ exitWithError errMessage = do
 
 compileProgram :: Program -> FilePath -> IO ()
 compileProgram program outputFile = do
-    result  <- Frontend.runEval Frontend.emptyEnv (checkProgram program)
+    result  <- Frontend.runEval Frontend.emptyEnv (Frontend.checkProgram program)
     case result of
         Left message -> exitWithError message
         Right optimizedProgram -> do
-            (result', finalStore) <- runEval Backend.emptyEnv Backend.emptyStore (emitProgram optimizedProgram)
-            let text = prepareProgText (instructions finalStore)
-            let printFun = \handle -> sequence_ $ map (hPutStrLn handle) (compiled finalStore)
+            (result', finalStore) <- Backend.runEval Backend.emptyEnv Backend.emptyStore (Backend.emitProgram optimizedProgram)
+            let printFun = \handle -> sequence_ $ map (hPutStrLn handle) (Backend.compiled finalStore)
             withFile outputFile WriteMode printFun
             let bcFile = replaceExtension outputFile ".bc"
             _ <- system $ printf "llvm-as -o %s %s" bcFile outputFile
