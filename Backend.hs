@@ -116,7 +116,8 @@ data Store = Store {
     regCounter :: Counter,
     constCounter :: Counter,
     labelCounter :: Counter,
-    strConstants :: Map.Map String Name
+    strConstants :: Map.Map String Name,
+    compiled :: [String]
 }
 
 type Eval a = ReaderT Env (ErrorT String (StateT Store IO)) a
@@ -188,7 +189,8 @@ getNextRegistry = do
         regCounter = actRegNum + 1,
         constCounter = constCounter store,
         labelCounter = labelCounter store,
-        strConstants = strConstants store
+        strConstants = strConstants store,
+        compiled = compiled store
     }
     return $ regName actRegNum
 
@@ -217,6 +219,7 @@ changeBlock blockNum updateFun = do
         constCounter = constCounter store,
         labelCounter = labelCounter store,
         strConstants = strConstants store,
+        compiled = compiled store
     }
 
 addInstructionsToBlock :: [Instruction] -> LabelNum -> Eval ()
@@ -242,16 +245,44 @@ setLastInstruction lastInstr = do
     store <- get
     setLastInstructionInBlock (actBlockNum store) (setLastInBlock lastInstr)
 
-concatStrings :: ExpVal -> ExpVal -> 
+getBlock :: LabelNum -> Eval LLVMBlock
+getBlock labelNum = do
+    store <- get
+    let Just block = Map.lookup labelNum (blocks store)
+    return block
+    
+getActBlock :: Eval LLVMBlock
+getActBlock = do
+    store <- get
+    Just actBlock = Map.lookup (actBlockNum store) (blocks store)
+    return actBlock
+
+getActBlockNum :: Eval LabelNum
+getActBlockNum = do
+    store <- get
+    return $ actBlockNum store
+
+addNewLLVMBlock :: Eval LabelNum
+addNewLLVMBlock = do
+    store <- get
+    let next = (actBlockNum store) + 1
+    let newBlock = LLVMBlock {
+        labelNum = next,
+        instructions = [],
+        lastInstr = Nothing
+    }
+    put $ Store {
+        blocks = Map.insert next newBlock,
+        actBlockNum = next,
+        regCounter = regCounter store,
+        constCounter = constCounter store,
+        labelCounter = labelCounter store,
+        strConstants = strConstants store,
+        compiled = compiled store
+    }
+    return next
 
 emitBinOpInstruction :: Expr -> Expr -> BinOp -> Registry -> Eval (Type, Instruction)
-emitBinOpInstruction e1 e2 Add resultReg = do
-    val1 <- emitExpr e1
-    val2 <- emitExpr e2
-    -- after type checking
-    case type_ val1 of
-        Int -> return (Int, BinOpExpr resultReg Add val1 val2)
-        Str -> return (Str, Concat resultReg (reg val1) (reg val2))
 emitBinOpInstruction e1 e2 operator resultReg = do
     val1 <- emitExpr e1
     val2 <- emitExpr e2
@@ -298,6 +329,7 @@ emitExprInstruction (EMul expr1 Div expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Div resultReg
 emitExprInstruction (EMul expr1 Mod expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Mod resultReg
+-- Adding is handled separately in emitExpr
 emitExprInstruction (EAdd expr1 Minus expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Sub resultReg
 emitExprInstruction (ERel expr1 LTH expr2) resultReg =
@@ -356,7 +388,8 @@ getStringName s = do
                 regCounter = regCounter store,
                 constCounter = (constCounter store) + 1,
                 labelCounter = labelCounter store,
-                strConstants = Map.insert s name (strConstants store)
+                strConstants = Map.insert s name (strConstants store),
+                compiled = compiled store
             }
             return name
 
@@ -405,7 +438,7 @@ emitExpr (EAdd expr1 Plus expr2) = do
             addInstruction $ BinOpExpr resultReg Add val1 val2
             return $ ExpVal {repr = Reg resultReg, type_ = Int}
 emitExpr expr = do
-    actBlock <- getActBlock
+    actBlock <- getActBlockNum
     emitExprToBlock expr actBlock
 
 emitDeclarations :: Type -> [Item] -> [Instruction] -> Eval (Env, [Instruction])
@@ -476,27 +509,57 @@ emitStmt VRet = do
     setLastInstruction VoidRet
     ask
 emitStmt (Cond expr stmt) = do
-    actBlock <- getActBlock
-    trueBlock <- addNewLLVMBlock
+    actBlockNum <- getActBlockNum
+    trueBlockNum <- addNewLLVMBlock
     emitStmt stmt
-    afterBlock <- addNewLLVMBlock
-    emitCondExpr actBlock trueBlock falseBlock
+    afterBlockNum <- addNewLLVMBlock
+    emitCondExpr actBlock trueBlockNum afterBlockNum
+    addLastIfNecessary trueBlockNum (Jump afterBlock) 
     ask
 emitStmt (CondElse expr stmt1 stmt2) = do
-    actBlock <- getActBlock
-    trueBlock <- addNewLLVMBlock
+    actBlockNum <- getActBlockNum
+    trueBlockNum <- addNewLLVMBlock
     emitStmt stmt1
-    falseBlock <- addNewLLVMBlock
+    falseBlockNum <- addNewLLVMBlock
     emitStmt stmt2
-    emitCondExpr expr actBlock trueBlock falseBlock
+    emitCondExpr expr actBlock trueBlockNum falseBlockNum
     addLastInstr trueBlock
 emitStmt (While expr stmt) = do
     actBlock <- getActBlock
-    loop <- addNewLLVMBlock
-    addLastInstruction (Jump loop)
+    loopNum <- addNewLLVMBlock
     emitStmt stmt
-    loopCond <- addNewLLVMBlock
-    emitCondExpr loopCond loop 
+    -- TODO: while(true) { return 1;}
+    loopCondNum <- addNewLLVMBlock
+    setLastInstructionInBlock (Jump loopCondNum) actBlock
+    afterLoop <- addNewLLVMBlock
+    emitCondExpr expr actBlock loop afterLoop
+    ask
+emitStmt (SExpr expr) = emitExpr expr
+
+setLastIfNecessary :: LabelNum -> Instruction -> Eval ()
+setLastIfNecessary blockNum lastInstruction = do
+    block <- getBlock blockNum
+    case lastInstr block of
+        Just _ -> return ()
+        Nothing -> do
+            let updated = LLVMBlock {
+                labelNum = blockNum,
+                instructions = instructions block,
+                lastInstr = lastInstruction
+            }
+            store <- get
+            put $ Store {
+                blocks = Map.insert blockNum updated (blocks store),
+                actBlockNum = actBlockNum store,
+                regCounter = regCounter store,
+                constCounter = constCounter store,
+                labelCounter = labelCounter store,
+                strConstants = strConstants store,
+                compiled = compiled store
+            }
+
+addNextBlockAndJump :: LabelNum -> Instruction -> Eval ()
+add
 
 emitStmts :: [Stmt] -> Eval Env
 emitStmts [] = ask
