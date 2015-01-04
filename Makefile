@@ -1,11 +1,6 @@
 all:
-	happy -gca ParLatte.y
-	alex -g LexLatte.x
-	latex DocLatte.tex; dvips DocLatte.dvi -o DocLatte.ps
-	ghc --make TestLatte.hs -o TestLatte
+	ghc --make -isrc/ src/Compiler.hs -o latc
 clean:
-	-rm -f *.log *.aux *.hi *.o *.dvi
-	-rm -f DocLatte.ps
-distclean: clean
-	-rm -f DocLatte.* LexLatte.* ParLatte.* LayoutLatte.* SkelLatte.* PrintLatte.* TestLatte.* AbsLatte.* TestLatte ErrM.* SharedString.* Latte.dtd XMLLatte.* Makefile*
+	-rm -f src/*.hi src/*.o
+	-rm -f latc
 

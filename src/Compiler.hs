@@ -10,8 +10,8 @@ import AbsLatte
 import LexLatte
 import ParLatte
 import ErrM
-import Frontend
-import Backend
+import qualified Frontend(runEval, checkProgram, emptyEnv)
+import Backend(runEval, emitProgram, emptyEnv, emptyStore)
 
 
 exitWithError :: String -> IO ()
@@ -20,24 +20,26 @@ exitWithError errMessage = do
     hPutStrLn stderr errMessage
     exitFailure
 
-compileProgram :: Program -> IO ()
-compileProgram program = do
-    (result, finalStore) <- runEval emptyStore (emitProgram program)
+compileProgram :: Program -> FilePath -> IO ()
+compileProgram program outputFile = do
+    result  <- Frontend.runEval Frontend.emptyEnv (checkProgram program)
     case result of
-        Left message -> 
-        Right () -> do
+        Left message -> exitWithError message
+        Right optimizedProgram -> do
+            (result', finalStore) <- runEval Backend.emptyEnv Backend.emptyStore (emitProgram optimizedProgram)
             let text = prepareProgText (instructions finalStore)
-            let printFun = \handle -> sequence_ $ map (hPutStrLn handle) text
+            let printFun = \handle -> sequence_ $ map (hPutStrLn handle) (compiled finalStore)
             withFile outputFile WriteMode printFun
             let bcFile = replaceExtension outputFile ".bc"
-            exitCode <- system $ printf "llvm-as -o %s %s" bcFile outputFile
+            _ <- system $ printf "llvm-as -o %s %s" bcFile outputFile
+            _ <- system $ printf "llvm-link -o %s %s lib/runtime.bc" bcFile bcFile
             return ()
 
 parseAndCompile :: String -> FilePath -> IO ()
 parseAndCompile progText outputFile = do
     let parse = pProgram (myLexer progText)
     case parse of
-        Ok program -> compileProgram program
+        Ok program -> compileProgram program outputFile
         Bad message -> exitWithError message
 
 main = do
