@@ -80,11 +80,11 @@ Neg.       Expr5 ::= "-" Expr6 ;
 
 Not.       Expr5 ::= "!" Expr6 ;
 
-EMul.      Expr4 ::= MulOp Expr4 Expr5 ;
+EMul.      Expr4 ::= Expr4 MulOp Expr5 ;
 
-EAdd.      Expr3 ::= AddOp Expr3 Expr4 ;
+EAdd.      Expr3 ::= Expr3 AddOp Expr4 ;
 
-ERel.      Expr2 ::= RelOp Expr2 Expr3 ;
+ERel.      Expr2 ::= Expr2 RelOp Expr3 ;
 
 EAnd.      Expr1 ::= Expr2 "&&" Expr1 ;
 

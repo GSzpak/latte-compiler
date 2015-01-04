@@ -57,9 +57,9 @@ data Expr =
  | EString String
  | Neg Expr
  | Not Expr
- | EMul MulOp Expr Expr
- | EAdd AddOp Expr Expr
- | ERel RelOp Expr Expr
+ | EMul Expr MulOp Expr
+ | EAdd Expr AddOp Expr
+ | ERel Expr RelOp Expr
  | EAnd Expr Expr
  | EOr Expr Expr
   deriving (Eq,Ord,Show)
