@@ -386,32 +386,6 @@ getStringName s = do
             }
             return name
 
-emitConcatToBlock :: ExpVal -> ExpVal -> BlockNum -> Eval ExpVal
-emitConcatToBlock val1 val2 blockNum = do
-    (lenReg1, lenVal1) <- getExpVal Int
-    addInstructionToBlock (Call lenReg1 Int (globalName' "strlen") [val1]) blockNum
-    (lenReg2, lenVal2) <- getExpVal Int
-    addInstructionToBlock (Call lenReg2 Int (globalName' "strlen") [val2]) blockNum
-    (tempReg1, tempVal1) <- getExpVal Int
-    addInstructionToBlock (BinOpExpr tempReg1 Add lenVal1 (numExpVal 1)) blockNum
-    (tempReg2, tempVal2) <- getExpVal Int
-    addInstructionToBlock (BinOpExpr tempReg2 Add tempVal1 lenVal2) blockNum
-    (mallocReg, mallocVal) <- getExpVal Str
-    addInstructionToBlock (Call mallocReg Str (globalName' "malloc") [tempVal2]) blockNum
-    (strcpyReg, strcpyVal) <- getExpVal Str
-    addInstructionToBlock (Call strcpyReg Str (globalName' "strcpy") [mallocVal, val1]) blockNum
-    (strcatReg, strcatVal) <- getExpVal Str
-    addInstructionToBlock (Call strcatReg Str (globalName' "strcat") [strcpyVal, val2]) blockNum
-    return strcatVal
-    where
-        getExpVal :: Type -> Eval (Registry, ExpVal)
-        getExpVal t = do
-            reg <- getNextRegistry
-            let val = ExpVal {repr = RegVal reg, type_ = t}
-            return $ (reg, val)
-        globalName' :: String -> Name
-        globalName' s = globalName (Ident s)
-
 emitExprToBlock :: Expr -> BlockNum -> Eval ExpVal
 emitExprToBlock (ELitInt n) _ = return $ numExpVal n
 emitExprToBlock ELitTrue _ = return $ boolExpVal True
@@ -425,10 +399,13 @@ emitExprToBlock (EAdd expr1 Plus expr2) blockNum = do
     val1 <- emitExprToBlock expr1 blockNum 
     val2 <- emitExprToBlock expr2 blockNum
     -- after type checking
+    resultReg <- getNextRegistry
     case type_ val1 of
-        Str -> emitConcatToBlock val1 val2 blockNum
+        Str -> do
+            let concatFun = globalName $ Ident "concat_"
+            addInstructionToBlock (Call resultReg Str concatFun [val1, val2]) blockNum
+            return $ ExpVal {repr = RegVal resultReg, type_ = Str}
         Int -> do
-            resultReg <- getNextRegistry
             addInstructionToBlock (BinOpExpr resultReg Add val1 val2) blockNum
             return $ ExpVal {repr = RegVal resultReg, type_ = Int}
 emitExprToBlock (EAnd expr1 expr2) blockNum = do
@@ -708,10 +685,7 @@ addOuterDeclarations = addCompiled $ map show declarations
             FunDecl "error" Void [],
             FunDecl "readInt" Int [],
             FunDecl "readString" Str [],
-            FunDecl "malloc" Str [Int],
-            FunDecl "strlen" Int [Str],
-            FunDecl "strcpy" Str [Str, Str],
-            FunDecl "strcat" Str [Str, Str]]
+            FunDecl "concat_" Str [Str, Str]]
 
 addStringsDefinitions :: Eval ()
 addStringsDefinitions = do
