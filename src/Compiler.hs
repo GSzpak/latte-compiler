@@ -26,6 +26,7 @@ compileProgram program outputFile = do
     case result of
         Left message -> exitWithError message
         Right optimizedProgram -> do
+            hPutStrLn stderr "OK"
             (result', finalStore) <- Backend.runEval Backend.emptyEnv Backend.emptyStore (Backend.emitProgram optimizedProgram)
             let printFun = \handle -> sequence_ $ map (hPutStrLn handle) (Backend.compiled finalStore)
             withFile outputFile WriteMode printFun

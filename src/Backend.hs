@@ -60,6 +60,44 @@ data Instruction =
     GetElementPtr Registry Integer Name |
     FunDecl Name Type [Type]
 
+regName :: Counter -> Registry
+regName regNum = "%r" ++ (show regNum)
+
+globalName :: Ident -> Name
+globalName (Ident name) = '@':name
+
+constName :: Counter -> Name
+constName strNum = printf "@.str%s" (show strNum)
+
+label :: LabelNum -> Label
+label num = printf "label%s" (show num)
+
+showLLVMRelOp :: RelOp -> String
+showLLVMRelOp LTH = "slt"
+showLLVMRelOp LE = "sle"
+showLLVMRelOp GTH = "sgt"
+showLLVMRelOp GE = "sge"
+showLLVMRelOp EQU = "eq"
+showLLVMRelOp NE = "ne"
+
+showLLVMType :: Type -> String
+showLLVMType Int = "i32"
+showLLVMType Str = "i8*"
+showLLVMType Bool = "i1"
+showLLVMType Void = "void"
+
+printWithSeparator :: [String] -> String -> String
+printWithSeparator strings sep = unwords $ List.intersperse "," strings
+
+showFunArgs :: [ExpVal] -> String
+showFunArgs args = printWithSeparator (map show args) ","
+
+showPhiExprs :: [(ExpVal, LabelNum)] -> String
+showPhiExprs exprsWithLabels = printWithSeparator (map show' exprsWithLabels) ","
+    where
+        show' :: (ExpVal, LabelNum) -> String
+        show' (val, num) = printf "[ %s, %s ]" (show $ repr val) ('%':(label num))
+
 instance Show Instruction where
     show (BinOpExpr result binop val1 val2) =
         let
@@ -75,23 +113,23 @@ instance Show Instruction where
             val2Repr = show $ repr val2
         in
             printf "%s = icmp %s %s %s, %s" result (showLLVMRelOp relop) typeRepr val1Repr val2Repr
-    show (NotExpr result val) =
-        printf "%s = xor i1 %s, true" result (show $ repr val)
-    show (Load result type_ reg) = 
-        printf "%s = load %s* %s" result (showLLVMType type_) reg
-    show (Call result type_ fun args) = 
-        printf "%s = call %s %s(%s)" result (showLLVMType type_) fun (showFunArgs args)
+    --show (NotExpr result val) =
+    --    printf "%s = xor i1 %s, true" result (show $ repr val)
+    show (Load result t reg) = 
+        printf "%s = load %s* %s" result (showLLVMType t) reg
+    show (Call result t fun args) = 
+        printf "%s = call %s %s(%s)" result (showLLVMType t) fun (showFunArgs args)
     show (StoreInstr val reg) =
         printf "store %s, %s* %s" (show val) (showLLVMType $ type_ val) reg
-    show (Alloca reg type_) =
-        printf "%s = alloca %s" reg (show type_)
+    show (Alloca reg t) =
+        printf "%s = alloca %s" reg (showLLVMType t)
     show VoidRet = "ret void"
     show (ExpRet val) = printf "ret %s" (show val)
     show (CondJump val labelNum1 labelNum2) =
-        printf "br %s, label %%s, label %s" (show val) ('%':(label labelNum1)) (label labelNum2)
-    show (Jump labelNum) = printf "br label %%s" (label labelNum)
-    show (Phi result type_ exprsFromLabels) = 
-        printf "%s = phi %s %s" result (show type_) (showPhiExprs exprsFromLabels)
+        printf "br %s, label %s, label %s" (show val) ('%':(label labelNum1)) (label labelNum2)
+    show (Jump labelNum) = printf "br label %s" ('%':(label labelNum))
+    show (Phi result t exprsFromLabels) = 
+        printf "%s = phi %s %s" result (show t) (showPhiExprs exprsFromLabels)
     show (GetElementPtr resultReg length constName) = 
         printf "%s = getelementptr inbounds [%s x i8]* %s, i32 0, i32 0" resultReg (show length) constName
     show (FunDecl name retType argTypes) =
@@ -146,44 +184,6 @@ emptyStore = Store {
 
 runEval :: Environment -> Store -> Eval a -> IO (Either String a, Store)
 runEval env state eval = runStateT (runErrorT (runReaderT eval env)) state
-
-regName :: Counter -> Registry
-regName regNum = "%r" ++ (show regNum)
-
-globalName :: Ident -> Name
-globalName (Ident name) = '@':name
-
-constName :: Counter -> Name
-constName strNum = printf "@.str%s" (show strNum)
-
-label :: LabelNum -> Label
-label num = printf "label%s" (show num)
-
-showLLVMRelOp :: RelOp -> String
-showLLVMRelOp LTH = "slt"
-showLLVMRelOp LE = "sle"
-showLLVMRelOp GTH = "sgt"
-showLLVMRelOp GE = "sge"
-showLLVMRelOp EQU = "eq"
-showLLVMRelOp NE = "ne"
-
-showLLVMType :: Type -> String
-showLLVMType Int = "i32"
-showLLVMType Str = "i8*"
-showLLVMType Bool = "i1"
-showLLVMType Void = "void"
-
-printWithSeparator :: [String] -> String -> String
-printWithSeparator strings sep = unwords $ List.intersperse "," strings
-
-showFunArgs :: [ExpVal] -> String
-showFunArgs args = printWithSeparator (map show args) ","
-
-showPhiExprs :: [(ExpVal, LabelNum)] -> String
-showPhiExprs exprsWithLabels = printWithSeparator (map show' exprsWithLabels) ","
-    where
-        show' :: (ExpVal, LabelNum) -> String
-        show' (val, num) = printf "[ %s, %s ]" (show $ repr val) ('%':(label num))
 
 numExpVal :: Integer -> ExpVal
 numExpVal n = ExpVal {
@@ -345,30 +345,30 @@ emitExprInstruction (EApp ident args) resultReg = do
     let instr = Call resultReg t name argReprs
     return (t, instr)
 emitExprInstruction (Neg expr) resultReg =
-    emitExprInstruction (EAdd Minus (ELitInt 0) expr) resultReg
+    emitExprInstruction (EAdd (ELitInt 0) Minus expr) resultReg
 emitExprInstruction (Not expr) resultReg = do
     val <- emitExpr expr
     return (Bool, NotExpr resultReg val)
-emitExprInstruction (EMul Times expr1 expr2) resultReg =
+emitExprInstruction (EMul expr1 Times expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Mul resultReg
-emitExprInstruction (EMul Div expr1 expr2) resultReg =
+emitExprInstruction (EMul expr1 Div expr2) resultReg =
     emitBinOpInstruction expr1 expr2 DivOp resultReg
-emitExprInstruction (EMul Mod expr1 expr2) resultReg =
+emitExprInstruction (EMul expr1 Mod expr2) resultReg =
     emitBinOpInstruction expr1 expr2 ModOp resultReg
 -- Adding is handled separately in emitExpr
-emitExprInstruction (EAdd Minus expr1 expr2) resultReg =
+emitExprInstruction (EAdd expr1 Minus expr2) resultReg =
     emitBinOpInstruction expr1 expr2 Sub resultReg
-emitExprInstruction (ERel LTH expr1 expr2) resultReg =
+emitExprInstruction (ERel expr1 LTH expr2) resultReg =
     emitRelOpInstruction expr1 expr2 LTH resultReg
-emitExprInstruction (ERel LE expr1 expr2) resultReg =
+emitExprInstruction (ERel expr1 LE expr2) resultReg =
     emitRelOpInstruction expr1 expr2 LE resultReg
-emitExprInstruction (ERel GTH expr1 expr2) resultReg =
+emitExprInstruction (ERel expr1 GTH expr2) resultReg =
     emitRelOpInstruction expr1 expr2 GTH resultReg
-emitExprInstruction (ERel GE expr1 expr2) resultReg =
+emitExprInstruction (ERel expr1 GE expr2) resultReg =
     emitRelOpInstruction expr1 expr2 GE resultReg
-emitExprInstruction (ERel EQU expr1 expr2) resultReg =
+emitExprInstruction (ERel expr1 EQU expr2) resultReg =
     emitRelOpInstruction expr1 expr2 EQU resultReg
-emitExprInstruction (ERel NE expr1 expr2) resultReg =
+emitExprInstruction (ERel expr1 NE expr2) resultReg =
     emitRelOpInstruction expr1 expr2 NE resultReg
 
 emitExprToBlock :: Expr -> LabelNum -> Eval ExpVal
@@ -455,7 +455,7 @@ emitExpr (EString s) = do
     registry <- getNextRegistry
     addInstruction $ GetElementPtr registry (llvmStrLen s) name
     return $ ExpVal {repr = RegVal registry, type_ = Str}
-emitExpr (EAdd Plus expr1 expr2) = do
+emitExpr (EAdd expr1 Plus expr2) = do
     val1 <- emitExpr expr1 
     val2 <- emitExpr expr2
     -- after type checking
@@ -526,9 +526,9 @@ emitStmt (Decl type_ items) = do
     addInstructions instructions
     return env
 emitStmt (Incr ident) =
-    emitStmt $ Ass ident (EAdd Plus (EVar ident) (ELitInt 1))
+    emitStmt $ Ass ident (EAdd (EVar ident) Plus (ELitInt 1))
 emitStmt (Decr ident) =
-    emitStmt $ Ass ident (EAdd Minus (EVar ident) (ELitInt 1))
+    emitStmt $ Ass ident (EAdd (EVar ident) Minus (ELitInt 1))
 emitStmt (Ret expr) = do
     val <- emitExpr expr
     setLastInstruction $ ExpRet val

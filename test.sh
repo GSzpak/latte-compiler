@@ -1,7 +1,10 @@
 for f in lattests/good/*.lat;
-do
+do  
+    name="${f%%.*}"
     ./latc $f
-    lli $f.bc > $f.out
-    diff -s $.out $f.output
+    lli $name.bc > $name.out
+    diff -s $name.out $name.output
 done;
+rm lattests/good/*.ll
+rm lattests/good/*.out
     
