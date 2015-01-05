@@ -328,20 +328,6 @@ emitRelOpInstrToBlock e1 e2 relOp resultReg blockNum = do
     addInstructionToBlock (RelOpExpr resultReg relOp val1 val2) blockNum
     return Bool
 
--- TODO: useless
-{-
-negate :: Expr -> Expr
-negate ELitTrue = ELitFalse
-negate ELitFalse = ELitTrue
-negate (EAnd e1 e2) = EOr (negate e1) (negate e2)
-negate (EOr e1 e2) = EAnd (negate e1) (negate e2)
-negate (ERel e1 LTH e2) = ERel e1 GE e2
-negate (ERel e1 LE e2) = ERel e1 GTH e2
-negate (ERel e1 GTH e2) = ERel e1 LE e2
-negate (ERel e1 EQU e2) = ERel e1 NE e2
-negate (ERel e1 NE e2) = ERel e1 EQU e2
--}
-
 emitExprInstructionToBlock :: Expr -> Registry -> LabelNum -> Eval Type
 emitExprInstructionToBlock (EVar ident) resultReg blockNum = do
     env <- ask
@@ -497,11 +483,10 @@ emitDeclarations t (item:items) = case item of
         env <- declare ident val
         local (\_ -> env) (emitDeclarations t items))
     NoInit ident -> do
-        emptyStrReg <- getStringName ""
         val <- case t of
             Int -> return $ numExpVal 0
             Bool -> return falseExpVal
-            Str -> return $ ExpVal {repr = RegVal emptyStrReg, type_ = Str}
+            Str -> emitExpr $ EString ""
         env <- declare ident val
         local (\_ -> env) (emitDeclarations t items)
 
@@ -644,6 +629,7 @@ compileBlocksInstructions = do
         compiled = compiled store'
     }
     where
+        -- return from void function
         addMissingRet :: (LabelNum, LLVMBlock) -> (LabelNum, LLVMBlock)
         addMissingRet (labelNum, block) = case (lastInstr block) of
             Just _ -> (labelNum, block)
@@ -656,7 +642,6 @@ compileBlocksInstructions = do
                 }
         compileBlockWithLabel :: (LabelNum, LLVMBlock) -> Eval ()
         compileBlockWithLabel (labelNum, block) = do
-            -- return from void function
             addCompiled [formatLabel labelNum]
             addCompiled $ compileBlock block
         formatLabel :: LabelNum -> String
