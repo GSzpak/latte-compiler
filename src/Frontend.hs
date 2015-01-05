@@ -233,91 +233,7 @@ checkStatements (stmt:statements) = do
 checkBlock :: Block -> Eval Env
 checkBlock (Block statements) = checkStatements statements
 
--- Expression evaluation is run after type checking.
--- Throws error if evaluation is not possible during compilation.
-
-{-
-
-data ExprConst = IntConst Integer | BoolConst Bool | StrConst String
-
-instance Eq ExprConst where
-    (IntConst n1) == (IntConst n2) = (n1 == n2)
-    (BoolConst b1) == (BoolConst b2) = (b1 == b2)
-    (StrConst s1) == (StrConst s2) = (s1 == s2)
-    _ == _ = False
-
-instance Ord ExprConst where
-    (IntConst n1) <= (IntConst n2) = (n1 <= n2)
-    (BoolConst b1) <= (BoolConst b2) = (b1 <= b2)
-    (StrConst s1) <= (StrConst s2) = (s1 <= s2)
-
-getExpFromConst :: ExprConst -> Expr
-getExpFromConst (IntConst n) = ELitInt n
-getExpFromConst (BoolConst True) = ELitTrue
-getExpFromConst (BoolConst False) = ELitFalse
-getExpFromConst (StrConst s) = EString s
-
-evaluationNotPossible :: String
-evaluationNotPossible = "Not possible"
-
-evaluationError :: String
-evaluationError = "Error while evaluating constant expression"
-
-evalConstExpr :: Expr -> Eval ExprConst
-evalConstExpr (EVar ident) = throwError evaluationNotPossible
-evalConstExpr (ELitInt n) = return (IntConst n)
-evalConstExpr ELitTrue = return (BoolConst True)
-evalConstExpr ELitFalse = return (BoolConst False)
-evalConstExpr (EString s) = return (StrConst s)
-evalConstExpr (Not expr) = do
-    BoolConst b <- evalConstExpr expr
-    return $ BoolConst $ not b
-evalConstExpr (Neg expr) = do
-    IntConst n <- evalConstExpr expr
-    return $ IntConst $ -n
-evalConstExpr (EMul e1 Times e2) = evalConstIntExpr e1 e2 (*) False
-evalConstExpr (EMul e1 Div e2) = evalConstIntExpr e1 e2 div True
-evalConstExpr (EMul e1 Mod e2) = evalConstIntExpr e1 e2 mod True
-evalConstExpr (EAdd e1 Plus e2) = do
-    exprType <- evalExprType e1
-    case exprType of 
-        Int -> evalConstIntExpr e1 e2 (+) False
-        Str -> do
-            StrConst s1 <- evalConstExpr e1
-            StrConst s2 <- evalConstExpr e2
-            return $ StrConst $ s1 ++ s2
-evalConstExpr (EAdd e1 Minus e2) = evalConstIntExpr e1 e2 (-) False
-evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (&&)
-evalConstExpr (EAnd e1 e2) = evalConstBoolExpr e1 e2 (||)
-evalConstExpr (ERel e1 LTH e2) = evalCompareExpr e1 e2 (<)
-evalConstExpr (ERel e1 LE e2) = evalCompareExpr e1 e2 (<=)
-evalConstExpr (ERel e1 GTH e2) = evalCompareExpr e1 e2 (>)
-evalConstExpr (ERel e1 GE e2) = evalCompareExpr e1 e2 (>=)
-evalConstExpr (ERel e1 EQU e2) = evalCompareExpr e1 e2 (==)
-evalConstExpr (ERel e1 NE e2) = evalCompareExpr e1 e2 (/=)
-evalConstExpr (EApp _ exprs) 
-
-foldConstIntExpr :: Expr -> Expr -> (Integer -> Integer -> Integer) -> Bool -> Eval ExprConst
-foldConstIntExpr e1 e2 oper checkDivision = do
-    IntConst n1 <- evalConstExpr e1
-    IntConst n2 <- evalConstExpr e2
-    if checkDivision && n2 == 0 then
-        throwError evaluationError
-    else
-        return $ IntConst $ oper n1 n2
-
-evalConstBoolExpr :: Expr -> Expr -> (Bool -> Bool -> Bool) -> Eval ExprConst
-evalConstBoolExpr e1 e2 oper = do
-    BoolConst b1 <- evalConstExpr e1
-    BoolConst b2 <- evalConstExpr e2
-    return $ BoolConst $ oper b1 b2
-
-evalCompareExpr :: Expr -> Expr -> (ExprConst -> ExprConst -> Bool) -> Eval ExprConst
-evalCompareExpr e1 e2 oper = do
-    val1 <- evalConstExpr e1
-    val2 <- evalConstExpr e2
-    return $ BoolConst $ oper val1 val2
--}
+-- Expressions folding is run after type checking
 
 isConstant :: Expr -> Bool
 isConstant (ELitInt _) = True
@@ -355,6 +271,15 @@ foldBinOpExpr e1 e2 constructor fun checkDivision = do
                 return $ ELitInt $ fun n1 n2)
         _ -> return $ constructor folded1 folded2
 
+foldRelExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Expr -> Expr -> Bool) -> Eval Expr
+foldRelExpr expr1 expr2 constructor relOper = do
+    folded1 <- foldConstExpr expr1
+    folded2 <- foldConstExpr expr2
+    if (isConstant folded1 && isConstant folded2) then
+        return $ exprFromBool $ relOper folded1 folded2
+    else
+        return $ constructor folded1 folded2
+
 foldConstExpr :: Expr -> Eval Expr
 foldConstExpr (EVar ident) = return $ EVar ident
 foldConstExpr (ELitInt n) = return $ ELitInt n
@@ -388,12 +313,12 @@ foldConstExpr (EAdd e1 Plus e2) = do
 foldConstExpr (EAdd e1 Minus e2) = foldBinOpExpr e1 e2 ((flip EAdd) Minus) (-) False
 foldConstExpr (EAnd e1 e2) = foldBoolExpr e1 e2 EAnd (&&)
 foldConstExpr (EOr e1 e2) = foldBoolExpr e1 e2 EOr (||)
-foldConstExpr (ERel e1 LTH e2) = foldBoolExpr e1 e2 ((flip ERel) LTH) (<)
-foldConstExpr (ERel e1 LE e2) = foldBoolExpr e1 e2 ((flip ERel) LE) (<=)
-foldConstExpr (ERel e1 GTH e2) = foldBoolExpr e1 e2 ((flip ERel) GTH) (>)
-foldConstExpr (ERel e1 GE e2) = foldBoolExpr e1 e2 ((flip ERel) GE) (>=)
-foldConstExpr (ERel e1 EQU e2) = foldBoolExpr e1 e2 ((flip ERel) EQU) (==)
-foldConstExpr (ERel e1 NE e2) = foldBoolExpr e1 e2 ((flip ERel) NE) (/=)
+foldConstExpr (ERel e1 LTH e2) = foldRelExpr e1 e2 ((flip ERel) LTH) (<)
+foldConstExpr (ERel e1 LE e2) = foldRelExpr e1 e2 ((flip ERel) LE) (<=)
+foldConstExpr (ERel e1 GTH e2) = foldRelExpr e1 e2 ((flip ERel) GTH) (>)
+foldConstExpr (ERel e1 GE e2) = foldRelExpr e1 e2 ((flip ERel) GE) (>=)
+foldConstExpr (ERel e1 EQU e2) = foldRelExpr e1 e2 ((flip ERel) EQU) (==)
+foldConstExpr (ERel e1 NE e2) = foldRelExpr e1 e2 ((flip ERel) NE) (/=)
 
 foldConstants :: Stmt -> Eval Stmt
 foldConstants (BStmt block) = do

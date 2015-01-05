@@ -62,7 +62,14 @@ data Expr =
  | ERel Expr RelOp Expr
  | EAnd Expr Expr
  | EOr Expr Expr
-  deriving (Eq,Ord,Show)
+  deriving (Eq,Show)
+
+instance Ord Expr where
+    (ELitInt n1) <= (ELitInt n2) = (n1 <= n2)
+    ELitTrue <= ELitFalse = False
+    ELitFalse <= ELitTrue = True
+    (EString s1) <= (EString s2) = (s1 <= s2)
+    _ <= _ = False
 
 data AddOp =
    Plus
