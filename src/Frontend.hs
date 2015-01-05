@@ -388,53 +388,6 @@ hasReturn (CondElse _ stmt1 stmt2) = (hasReturn stmt1) && (hasReturn stmt2)
 hasReturn (BStmt (Block stmts)) = any hasReturn stmts
 hasReturn _ = False
 
--- After deleting unnecessary statements
-{-
-checkStmtForReturn :: Stmt -> Bool
-checkStmtForReturn (Ret _ ) = True
-checkStmtForReturn VRet = True
-checkStmtForReturn (BStmt block) = checkBlockForReturn block
-checkStmtForReturn (Cond expr stmt) =
-    case expr of
-        ELitTrue -> checkStmtForReturn stmt
-        _ -> False
-checkStmtForReturn (While expr stmt) = checkStmtForReturn (Cond expr stmt)
-checkStmtForReturn (CondElse expr stmt1 stmt2) =
-    case expr of
-        ELitTrue -> checkStmtForReturn stmt1
-        ELitFalse -> checkStmtForReturn stmt2
-        _ -> (checkStmtForReturn stmt1) && (checkStmtForReturn stmt2)
-checkStmtForReturn _ = False
-
-checkBlockForReturn :: Block -> Bool
-checkBlockForReturn (Block stmts) = any checkStmtForReturn stmts
-
-checkBlockForUnreachableCode :: Block -> Eval Bool
-checkBlockForUnreachableCode (Block []) = return False
-checkBlockForUnreachableCode (Block (stmt:stmts)) = do
-    isUnreachable <- checkStmtForReturn stmt
-    if isUnreachable then
-        return True
-    else
-        checkBlockForUnreachableCode (Block stmts)
-
-checkFunForReturn :: TopDef -> Eval ()
-checkFunForReturn (FnDef _ ident _ block) = do
-    isReturn <- checkBlockForReturn block
-    if not isReturn then
-        throwError $ printf "No \"return\" instruction in function %s" (name ident)
-    else
-        return ()
-
-checkFunForUnreachableCode :: TopDef -> Eval ()
-checkFunForUnreachableCode (FnDef _ ident _ block) = do
-    isUnreachable <- checkBlockForUnreachableCode block
-    if isUnreachable then
-        throwError $ printf "Unreachable code in function %s" (name ident)
-    else
-        return ()
--}
-
 checkFunction :: TopDef -> Eval TopDef
 checkFunction fun@(FnDef type_ ident args block) = do
     env <- declareArgs args

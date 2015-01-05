@@ -14,7 +14,7 @@ type Name = String
 type Registry = Name
 type Counter = Integer
 type Label = String
-type LabelNum = Integer
+type BlockNum = Integer
 
 data ExpValRepr =
     RegVal Name |
@@ -54,9 +54,9 @@ data Instruction =
     Alloca Registry Type |
     VoidRet |
     ExpRet ExpVal |
-    CondJump ExpVal LabelNum LabelNum |
-    Jump LabelNum |
-    Phi Registry Type [(ExpVal, LabelNum)] |
+    CondJump ExpVal BlockNum BlockNum |
+    Jump BlockNum |
+    Phi Registry Type [(ExpVal, BlockNum)] |
     GetElementPtr Registry Integer Name |
     FunDecl Name Type [Type]
 
@@ -72,7 +72,7 @@ globalName (Ident name) = '@':name
 constName :: Counter -> Name
 constName strNum = printf "@.str%s" (show strNum)
 
-label :: LabelNum -> Label
+label :: BlockNum -> Label
 label num = printf "label%s" (show num)
 
 llvmStrLen :: String -> Integer
@@ -98,10 +98,10 @@ printWithSeparator strings sep = unwords $ List.intersperse "," strings
 showFunArgs :: [ExpVal] -> String
 showFunArgs args = printWithSeparator (map show args) ","
 
-showPhiExprs :: [(ExpVal, LabelNum)] -> String
+showPhiExprs :: [(ExpVal, BlockNum)] -> String
 showPhiExprs exprsWithLabels = printWithSeparator (map show' exprsWithLabels) ","
     where
-        show' :: (ExpVal, LabelNum) -> String
+        show' :: (ExpVal, BlockNum) -> String
         show' (val, num) = printf "[ %s, %s ]" (show $ repr val) ('%':(label num))
 
 instance Show Instruction where
@@ -147,7 +147,7 @@ instance Show Instruction where
             printf "declare %s @%s(%s)" (showLLVMType retType) name showArgTypes
 
 data LLVMBlock = LLVMBlock {
-    labelNum :: LabelNum,
+    labelNum :: BlockNum,
     instructions :: [Instruction],
     lastInstr :: Maybe Instruction
 } deriving Show
@@ -162,8 +162,8 @@ data Environment = Environment {
 } deriving Show
 
 data Store = Store {
-    blocks :: Map.Map LabelNum LLVMBlock,
-    actBlockNum :: LabelNum,
+    blocks :: Map.Map BlockNum LLVMBlock,
+    actBlockNum :: BlockNum,
     regCounter :: Counter,
     constCounter :: Counter,
     labelCounter :: Counter,
@@ -240,7 +240,7 @@ setLastInBlock lastInstr block = LLVMBlock {
     lastInstr = Just lastInstr
 }
 
-getBlock :: LabelNum -> Eval LLVMBlock
+getBlock :: BlockNum -> Eval LLVMBlock
 getBlock labelNum = do
     store <- get
     let Just block = Map.lookup labelNum (blocks store)
@@ -252,12 +252,12 @@ getActBlock = do
     let Just actBlock = Map.lookup (actBlockNum store) (blocks store)
     return actBlock
 
-getActBlockNum :: Eval LabelNum
+getActBlockNum :: Eval BlockNum
 getActBlockNum = do
     store <- get
     return $ actBlockNum store
 
-changeBlock :: LabelNum -> (LLVMBlock -> LLVMBlock) -> Eval ()
+changeBlock :: BlockNum -> (LLVMBlock -> LLVMBlock) -> Eval ()
 changeBlock blockNum updateFun = do
     store <- get
     let Just actBlock = Map.lookup blockNum (blocks store)
@@ -271,7 +271,7 @@ changeBlock blockNum updateFun = do
         compiled = compiled store
     }
 
-addInstructionsToBlock :: [Instruction] -> LabelNum -> Eval ()
+addInstructionsToBlock :: [Instruction] -> BlockNum -> Eval ()
 addInstructionsToBlock instrs labelNum = changeBlock labelNum (addToBlock instrs)
 
 addInstructions :: [Instruction] -> Eval ()
@@ -279,13 +279,13 @@ addInstructions instrs = do
     store <- get
     addInstructionsToBlock instrs (actBlockNum store)
 
-addInstructionToBlock :: Instruction -> LabelNum -> Eval ()
+addInstructionToBlock :: Instruction -> BlockNum -> Eval ()
 addInstructionToBlock instr labelNum = addInstructionsToBlock [instr] labelNum
 
 addInstruction :: Instruction -> Eval ()
 addInstruction instr = addInstructions [instr]
 
-setLastInstructionInBlock :: Instruction -> LabelNum -> Eval ()
+setLastInstructionInBlock :: Instruction -> BlockNum -> Eval ()
 setLastInstructionInBlock lastInstr labelNum = 
     changeBlock labelNum (setLastInBlock lastInstr)
 
@@ -294,7 +294,7 @@ setLastInstruction lastInstr = do
     store <- get
     setLastInstructionInBlock lastInstr (actBlockNum store)
 
-addNewLLVMBlock :: Eval LabelNum
+addNewLLVMBlock :: Eval BlockNum
 addNewLLVMBlock = do
     store <- get
     let next = (actBlockNum store) + 1
@@ -314,21 +314,21 @@ addNewLLVMBlock = do
     }
     return next
 
-emitBinOpInstrToBlock :: Expr -> Expr -> BinOp -> Registry -> LabelNum -> Eval Type
+emitBinOpInstrToBlock :: Expr -> Expr -> BinOp -> Registry -> BlockNum -> Eval Type
 emitBinOpInstrToBlock e1 e2 operator resultReg blockNum = do
     val1 <- emitExprToBlock e1 blockNum
     val2 <- emitExprToBlock e2 blockNum
     addInstructionToBlock (BinOpExpr resultReg operator val1 val2) blockNum
     return Int
 
-emitRelOpInstrToBlock :: Expr -> Expr -> RelOp -> Registry -> LabelNum -> Eval Type
+emitRelOpInstrToBlock :: Expr -> Expr -> RelOp -> Registry -> BlockNum -> Eval Type
 emitRelOpInstrToBlock e1 e2 relOp resultReg blockNum = do
     val1 <- emitExprToBlock e1 blockNum
     val2 <- emitExprToBlock e2 blockNum
     addInstructionToBlock (RelOpExpr resultReg relOp val1 val2) blockNum
     return Bool
 
-emitExprInstructionToBlock :: Expr -> Registry -> LabelNum -> Eval Type
+emitExprInstructionToBlock :: Expr -> Registry -> BlockNum -> Eval Type
 emitExprInstructionToBlock (EVar ident) resultReg blockNum = do
     env <- ask
     let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
@@ -386,7 +386,7 @@ getStringName s = do
             }
             return name
 
-emitConcatToBlock :: ExpVal -> ExpVal -> LabelNum -> Eval ExpVal
+emitConcatToBlock :: ExpVal -> ExpVal -> BlockNum -> Eval ExpVal
 emitConcatToBlock val1 val2 blockNum = do
     (lenReg1, lenVal1) <- getExpVal Int
     addInstructionToBlock (Call lenReg1 Int (globalName' "strlen") [val1]) blockNum
@@ -412,7 +412,7 @@ emitConcatToBlock val1 val2 blockNum = do
         globalName' :: String -> Name
         globalName' s = globalName (Ident s)
 
-emitExprToBlock :: Expr -> LabelNum -> Eval ExpVal
+emitExprToBlock :: Expr -> BlockNum -> Eval ExpVal
 emitExprToBlock (ELitInt n) _ = return $ numExpVal n
 emitExprToBlock ELitTrue _ = return $ boolExpVal True
 emitExprToBlock ELitFalse _ = return $ boolExpVal False
@@ -490,7 +490,7 @@ emitDeclarations t (item:items) = case item of
         env <- declare ident val
         local (\_ -> env) (emitDeclarations t items)
 
-emitCondExpr :: Expr -> LabelNum -> LabelNum -> LabelNum -> Eval ()
+emitCondExpr :: Expr -> BlockNum -> BlockNum -> BlockNum -> Eval ()
 emitCondExpr (EAnd e1 e2) actBlock trueBlock falseBlock = do
     firstTrue <- addNewLLVMBlock
     emitCondExpr e1 actBlock firstTrue falseBlock
@@ -533,7 +533,7 @@ emitStmt (Cond expr stmt) = do
     setLastIfNecessary trueBlockNum (Jump afterBlockNum) 
     ask
     where
-        setLastIfNecessary :: LabelNum -> Instruction -> Eval ()
+        setLastIfNecessary :: BlockNum -> Instruction -> Eval ()
         setLastIfNecessary blockNum lastInstruction = do
             block <- getBlock blockNum
             case lastInstr block of
@@ -553,7 +553,7 @@ emitStmt (CondElse expr stmt1 stmt2) = do
             setLastInstructionInBlock (Jump afterNum) falseBlockNum
             ask
     where
-        jumpToNewBlock :: LabelNum -> Eval (Maybe LabelNum)
+        jumpToNewBlock :: BlockNum -> Eval (Maybe BlockNum)
         jumpToNewBlock blockNum = do
             block <- getBlock blockNum
             case lastInstr block of
@@ -630,7 +630,7 @@ compileBlocksInstructions = do
     }
     where
         -- return from void function
-        addMissingRet :: (LabelNum, LLVMBlock) -> (LabelNum, LLVMBlock)
+        addMissingRet :: (BlockNum, LLVMBlock) -> (BlockNum, LLVMBlock)
         addMissingRet (labelNum, block) = case (lastInstr block) of
             Just _ -> (labelNum, block)
             Nothing -> (labelNum, updated)
@@ -640,11 +640,11 @@ compileBlocksInstructions = do
                     instructions = instructions block,
                     lastInstr = Just VoidRet
                 }
-        compileBlockWithLabel :: (LabelNum, LLVMBlock) -> Eval ()
+        compileBlockWithLabel :: (BlockNum, LLVMBlock) -> Eval ()
         compileBlockWithLabel (labelNum, block) = do
             addCompiled [formatLabel labelNum]
             addCompiled $ compileBlock block
-        formatLabel :: LabelNum -> String
+        formatLabel :: BlockNum -> String
         formatLabel labelNum = printf "   %s:" (label labelNum)
 
 -- TODO: to delete
