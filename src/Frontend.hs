@@ -56,12 +56,12 @@ emptyEnv = Env {
 name :: Ident -> String
 name (Ident s) = s
 
-incomaptibleTypesErr :: Type -> Type -> String
-incomaptibleTypesErr expected actual =
-    printf "Incompatible types: expected %s, got %s" (printTree expected) (printTree actual)
+incomaptibleTypesErr :: Print a => Type -> Type -> a -> String
+incomaptibleTypesErr expected actual printable =
+    printf "Incompatible types in %s: expected %s, got %s" (printTree printable) (printTree expected) (printTree actual)
 
-unexpectedTypeErr :: Type -> String
-unexpectedTypeErr t = printf "Unexpected type: %s" (printTree t)
+unexpectedTypeErr :: Type -> Expr -> String
+unexpectedTypeErr t expr = printf "Unexpected type: %s in expression: %s" (printTree t) (printTree expr)
 
 incompatibleParametersErr :: Ident -> [Type] -> [Type] -> String
 incompatibleParametersErr ident formal act = 
@@ -89,29 +89,29 @@ getIdentType ident envSelector errMessage = do
         Just envElem -> return $ getType envElem
         Nothing -> throwError errMessage
 
-checkTypes :: Type -> Type -> Eval Type
-checkTypes actType expectedType = do
+checkTypes :: Print a => Type -> Type -> a -> Eval Type
+checkTypes actType expectedType printable = do
     if actType /= expectedType then
-        throwError $ incomaptibleTypesErr expectedType actType
+        throwError $ incomaptibleTypesErr expectedType actType printable
     else
         return actType
 
 checkExprType :: Expr -> Type -> Eval Type
 checkExprType expr expectedType = do
     exprType <- evalExprType expr
-    checkTypes exprType expectedType
+    checkTypes exprType expectedType expr
 
-checkTwoArgExpression :: Expr -> Expr -> [Type] -> Eval Type
-checkTwoArgExpression expr1 expr2 expectedTypes = do
+checkTwoArgExpression :: Expr -> Expr -> [Type] -> Expr -> Eval Type
+checkTwoArgExpression expr1 expr2 expectedTypes printable = do
     t1 <- evalExprType expr1
     t2 <- evalExprType expr2
-    checkTypes t1 t2
+    checkTypes t1 t2 printable
     -- t1 == t2
     let resultType = t1
     if resultType `elem` expectedTypes then
         return resultType
     else
-        throwError $ unexpectedTypeErr resultType
+        throwError $ unexpectedTypeErr resultType printable
 
 evalExprType :: Expr -> Eval Type
 evalExprType (EVar ident) = getIdentType ident varEnv (undeclaredVariableErr ident)
@@ -121,13 +121,13 @@ evalExprType ELitFalse = return Bool
 evalExprType (EString _) = return Str
 evalExprType (Neg expr) = checkExprType expr Int
 evalExprType (Not expr) = checkExprType expr Bool
-evalExprType (EMul expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int]
-evalExprType (EAdd expr1 Plus expr2) = checkTwoArgExpression expr1 expr2 [Int, Str]
-evalExprType (EAdd expr1 Minus expr2) = checkTwoArgExpression expr1 expr2 [Int]
-evalExprType (ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str]
-evalExprType (EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool]
-evalExprType (EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool]
-evalExprType (EApp ident arguments) = do
+evalExprType e@(EMul expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int] e
+evalExprType e@(EAdd expr1 Plus expr2) = checkTwoArgExpression expr1 expr2 [Int, Str] e
+evalExprType e@(EAdd expr1 Minus expr2) = checkTwoArgExpression expr1 expr2 [Int] e
+evalExprType e@(ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str] e
+evalExprType e@(EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] e
+evalExprType e@(EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] e
+evalExprType e@(EApp ident arguments) = do
     Fun type_ argTypes <- getIdentType ident funEnv (undeclaredFunctionErr ident)
     actTypes <- mapM evalExprType arguments
     if argTypes == actTypes then
@@ -184,18 +184,18 @@ checkStmt (Decl type_ items) = checkDeclaration items
             checkIfVarDeclared ident
             checkExprType expr type_
             local (declareVar ident type_) (checkDeclaration items)
-checkStmt (Ass ident expr) = do 
+checkStmt s@(Ass ident expr) = do 
     identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
     exprType <- evalExprType expr
-    checkTypes identType exprType
+    checkTypes identType exprType s
     ask
-checkStmt (Incr ident) = do
+checkStmt s@(Incr ident) = do
     identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
-    checkTypes identType Int
+    checkTypes identType Int s
     ask
-checkStmt (Decr ident) = do
+checkStmt s@(Decr ident) = do
     identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
-    checkTypes identType Int
+    checkTypes identType Int s
     ask
 checkStmt (Ret expr) = do
     env <- ask
@@ -206,7 +206,7 @@ checkStmt (Ret expr) = do
         ask
 checkStmt VRet = do
     env <- ask
-    checkTypes Void (actReturnType env)
+    checkTypes Void (actReturnType env) VRet
     return env
 checkStmt (Cond expr stmt) = do
     checkExprType expr Bool
