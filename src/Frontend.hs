@@ -189,7 +189,7 @@ checkStmt (Decl type_ items) = checkDeclaration items
 checkStmt s@(Ass ident expr) = do 
     identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
     exprType <- evalExprType expr
-    checkTypes identType exprType s
+    checkTypes exprType identType s
     ask
 checkStmt s@(Incr ident) = do
     identType <- getIdentType ident varEnv (undeclaredVariableErr ident)

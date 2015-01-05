@@ -8,3 +8,8 @@ done;
 rm lattests/good/*.ll
 rm lattests/good/*.out
 rm lattests/good/*.bc    
+for f in lattests/bad/*.lat;
+do  
+    name="${f%%.*}"
+    ./latc $f
+done;
