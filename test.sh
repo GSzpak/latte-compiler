@@ -7,4 +7,4 @@ do
 done;
 rm lattests/good/*.ll
 rm lattests/good/*.out
-    
+rm lattests/good/*.bc    

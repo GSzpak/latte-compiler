@@ -113,12 +113,14 @@ instance Show Instruction where
             val2Repr = show $ repr val2
         in
             printf "%s = icmp %s %s %s, %s" result (showLLVMRelOp relop) typeRepr val1Repr val2Repr
-    --show (NotExpr result val) =
-    --    printf "%s = xor i1 %s, true" result (show $ repr val)
+    show (NotExpr result val) =
+        printf "%s = xor i1 %s, true" result (show $ repr val)
     show (Load result t reg) = 
         printf "%s = load %s* %s" result (showLLVMType t) reg
+    show (Call _ Void fun args) = 
+       printf "call %s %s(%s)" (showLLVMType Void) fun (showFunArgs args)
     show (Call result t fun args) = 
-        printf "%s = call %s %s(%s)" result (showLLVMType t) fun (showFunArgs args)
+       printf "%s = call %s %s(%s)" result (showLLVMType t) fun (showFunArgs args)
     show (StoreInstr val reg) =
         printf "store %s, %s* %s" (show val) (showLLVMType $ type_ val) reg
     show (Alloca reg t) =
@@ -126,7 +128,7 @@ instance Show Instruction where
     show VoidRet = "ret void"
     show (ExpRet val) = printf "ret %s" (show val)
     show (CondJump val labelNum1 labelNum2) =
-        printf "br %s, label %s, label %s" (show val) ('%':(label labelNum1)) (label labelNum2)
+        printf "br %s, label %s, label %s" (show val) ('%':(label labelNum1)) ('%':(label labelNum2))
     show (Jump labelNum) = printf "br label %s" ('%':(label labelNum))
     show (Phi result t exprsFromLabels) = 
         printf "%s = phi %s %s" result (show t) (showPhiExprs exprsFromLabels)
@@ -142,16 +144,16 @@ data LLVMBlock = LLVMBlock {
     labelNum :: LabelNum,
     instructions :: [Instruction],
     lastInstr :: Maybe Instruction
-}
+} deriving Show
 
-data EnvElem = EnvElem Name Type
+data EnvElem = EnvElem Name Type deriving Show
 
 type Env = Map.Map Ident EnvElem
 
 data Environment = Environment {
     varEnv :: Env,
     funEnv :: Env
-}
+} deriving Show
 
 data Store = Store {
     blocks :: Map.Map LabelNum LLVMBlock,
@@ -161,7 +163,7 @@ data Store = Store {
     labelCounter :: Counter,
     strConstants :: Map.Map String Name,
     compiled :: [String]
-}
+} deriving Show
 
 type Eval a = ReaderT Environment (ErrorT String (StateT Store IO)) a
 
@@ -422,9 +424,9 @@ getStringName s = do
 emitConcat :: ExpVal -> ExpVal -> Eval ExpVal
 emitConcat val1 val2 = do
     (lenReg1, lenVal1) <- getExpVal Int
-    addInstruction $ Call lenReg1 Int (globalName' "strlen") [lenVal1]
+    addInstruction $ Call lenReg1 Int (globalName' "strlen") [val1]
     (lenReg2, lenVal2) <- getExpVal Int
-    addInstruction $ Call lenReg2 Int (globalName' "strlen") [lenVal2]
+    addInstruction $ Call lenReg2 Int (globalName' "strlen") [val2]
     (tempReg1, tempVal1) <- getExpVal Int
     addInstruction $ BinOpExpr tempReg1 Add lenVal1 (numExpVal 1)
     (tempReg2, tempVal2) <- getExpVal Int
@@ -497,7 +499,7 @@ emitDeclarations t (item:items) accu = case item of
             }
             let alloca = Alloca reg t
             let store = StoreInstr val reg
-            return (env, (store:(alloca:accu)))
+            return (env', (store:(alloca:accu)))
 
 emitCondExpr :: Expr -> LabelNum -> LabelNum -> LabelNum -> Eval ()
 emitCondExpr (EAnd e1 e2) actBlock trueBlock falseBlock = do
@@ -581,8 +583,9 @@ emitStmt (While expr stmt) = do
     -- TODO: while(true) { return 1;}
     loopCondNum <- addNewLLVMBlock
     setLastInstructionInBlock (Jump loopCondNum) actBlockNum
+    setLastInstructionInBlock (Jump loopCondNum) loopBodyNum
     afterLoop <- addNewLLVMBlock
-    emitCondExpr expr actBlockNum loopBodyNum afterLoop
+    emitCondExpr expr loopCondNum loopBodyNum afterLoop
     ask
 emitStmt (SExp expr) = do 
     emitExpr expr
@@ -641,33 +644,56 @@ compileBlock block = ["", formatInstr $ lastInstruction] ++ (map formatInstr (in
 compileBlocksInstructions :: Eval ()
 compileBlocksInstructions = do
     store <- get
-    sequence_ $ map compileBlockWithLabel (Map.toDescList $ blocks store)
+    sequence_ $ map compileBlockWithLabel (map addMissingRet (Map.toList $ blocks store))
+    store' <- get
     put $ Store {
         blocks = Map.empty,
-        actBlockNum = actBlockNum store,
-        regCounter = regCounter store,
-        constCounter = constCounter store,
-        labelCounter = labelCounter store,
-        strConstants = strConstants store,
-        compiled = compiled store
+        actBlockNum = actBlockNum store',
+        regCounter = regCounter store',
+        constCounter = constCounter store',
+        labelCounter = labelCounter store',
+        strConstants = strConstants store',
+        compiled = compiled store'
     }
     where
+        addMissingRet :: (LabelNum, LLVMBlock) -> (LabelNum, LLVMBlock)
+        addMissingRet (labelNum, block) = case (lastInstr block) of
+            Just _ -> (labelNum, block)
+            Nothing -> (labelNum, updated)
+            where
+                updated = LLVMBlock {
+                    labelNum = labelNum,
+                    instructions = instructions block,
+                    lastInstr = Just VoidRet
+                }
         compileBlockWithLabel :: (LabelNum, LLVMBlock) -> Eval ()
         compileBlockWithLabel (labelNum, block) = do
+            -- return from void function
             addCompiled [formatLabel labelNum]
             addCompiled $ compileBlock block
         formatLabel :: LabelNum -> String
-        formatLabel labelNum = printf "   %s" (label labelNum)
+        formatLabel labelNum = printf "   %s:" (label labelNum)
+
+-- TODO: to delete
+debug :: Show a => a -> Eval ()
+debug a = liftIO $ putStrLn (show a)
+
+
+debugStore :: Eval ()
+debugStore = do
+    s <- get
+    debug s
+    debug ""
 
 emitTopDef :: TopDef -> Eval ()
-emitTopDef (FnDef type_ ident args block) = do
-    addCompiled ["", "}"]
+emitTopDef (FnDef t ident args block) = do
+    let funHeader = printf "define %s %s(%s) {" (showLLVMType t) (globalName ident) (showLLVMArgs args)
+    addCompiled [funHeader]
     env <- addArgs args
     addNewLLVMBlock
     local (\_ -> env) (emitBlock block)
     compileBlocksInstructions
-    let funHeader = printf "define %s %s(%s) {" (showLLVMType type_) (globalName ident) (showLLVMArgs args)
-    addCompiled [funHeader]
+    addCompiled ["", "}"]
 
 reverseInstructions :: Eval ()
 reverseInstructions = do
@@ -681,9 +707,9 @@ reverseInstructions = do
         strConstants = strConstants store,
         compiled = reverse (compiled store)
     }
-    
-addOuterDefinitions :: Eval ()
-addOuterDefinitions = addCompiled $ map show declarations
+ 
+addOuterDeclarations :: Eval ()
+addOuterDeclarations = addCompiled $ map show declarations
     where
         declarations =
             [FunDecl "printInt" Void [Int],
@@ -703,16 +729,48 @@ addStringsDefinitions = do
     where
         getStringDecl :: (String, Name) -> String
         getStringDecl (s, name) =
-            printf "%s = private constant [%s x i8] c\"%s\00\"" name (llvmStrLen s) (concat $ map llvmFormat s)
+            printf "%s = private constant [%s x i8] c\"%s\\00\"" name (show $ llvmStrLen s) (concat $ map llvmFormat s)
         llvmFormat :: Char -> String
-        llvmFormat '\t' = "\09"
-        llvmFormat '\n' = "\0a"
+        llvmFormat '\t' = "\\09"
+        llvmFormat '\n' = "\\0A"
         llvmFormat c = [c]
+
+declareFunctions :: [TopDef] -> Eval Environment
+declareFunctions [] = ask
+declareFunctions ((FnDef t ident _ _):defs) = do
+    local addFun (declareFunctions defs)
+    where
+        addFun :: Environment -> Environment
+        addFun env = Environment {
+            varEnv = varEnv env,
+            funEnv = Map.insert ident (EnvElem (globalName ident) t) (funEnv env)
+        }
+
+declareBuiltIn :: Eval Environment
+declareBuiltIn =
+    let
+        builtIn = 
+            [(Ident "printInt", EnvElem "@printInt" Void),
+            (Ident "printString", EnvElem "@printString" Void),
+            (Ident "error", EnvElem "@error" Void),
+            (Ident "readInt", EnvElem "@readInt" Int),
+            (Ident "readString", EnvElem "@readString" Str)]
+    in 
+        local (addFunList builtIn) ask
+    where
+        addFunList :: [(Ident, EnvElem)] -> Environment -> Environment
+        addFunList funList env = Environment {
+            varEnv = varEnv env,
+            funEnv = Map.union (funEnv env) (Map.fromList funList)
+        }
 
 emitProgram :: Program -> Eval ()
 emitProgram (Program topDefs) = do
-    getStringName ""
-    sequence_ $ map emitTopDef (reverse topDefs)
+    env <- declareBuiltIn
+    env' <- local (\_ -> env) (declareFunctions topDefs)
+    local (\_ -> env') (sequence_ $ map emitTopDef (reverse topDefs))
     reverseInstructions
-    addOuterDefinitions
+    addCompiled [""]
+    addOuterDeclarations
+    addCompiled [""]
     addStringsDefinitions

@@ -26,13 +26,16 @@ entry:	%res = alloca i32
 	ret i32 %t2
 }
 
-define i32 @readString() {
-entry: res = alloca i8
+define i8* @readString() {
+entry: %res = alloca i8*
        %t1 = getelementptr [3 x i8]* @s, i32 0, i32 0
-	call i32 (i8*, ...)* @scanf(i8* %t1, i32* %res)
-	ret i8* %res
+       %t2 = load i8** %res
+	call i32 (i8*, ...)* @scanf(i8* %t1, i8* %t2)
+    %t3 = load i8** %res
+	ret i8* %t3
 }
 
-define void error() {
-    call @exit(1)
+define void @error() {
+    call void @exit(i32 1)
+    ret void
 }

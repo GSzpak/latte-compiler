@@ -101,15 +101,17 @@ checkExprType expr expectedType = do
     exprType <- evalExprType expr
     checkTypes exprType expectedType expr
 
-checkTwoArgExpression :: Expr -> Expr -> [Type] -> Expr -> Eval Type
-checkTwoArgExpression expr1 expr2 expectedTypes printable = do
+checkTwoArgExpression :: Expr -> Expr -> [Type] -> Maybe Type -> Expr -> Eval Type
+checkTwoArgExpression expr1 expr2 expectedTypes retType printable = do
     t1 <- evalExprType expr1
     t2 <- evalExprType expr2
     checkTypes t1 t2 printable
     -- t1 == t2
     let resultType = t1
     if resultType `elem` expectedTypes then
-        return resultType
+        return $ case retType of
+            Nothing -> resultType
+            Just t -> t
     else
         throwError $ unexpectedTypeErr resultType printable
 
@@ -121,12 +123,12 @@ evalExprType ELitFalse = return Bool
 evalExprType (EString _) = return Str
 evalExprType (Neg expr) = checkExprType expr Int
 evalExprType (Not expr) = checkExprType expr Bool
-evalExprType e@(EMul expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int] e
-evalExprType e@(EAdd expr1 Plus expr2) = checkTwoArgExpression expr1 expr2 [Int, Str] e
-evalExprType e@(EAdd expr1 Minus expr2) = checkTwoArgExpression expr1 expr2 [Int] e
-evalExprType e@(ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str] e
-evalExprType e@(EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] e
-evalExprType e@(EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] e
+evalExprType e@(EMul expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int] Nothing e
+evalExprType e@(EAdd expr1 Plus expr2) = checkTwoArgExpression expr1 expr2 [Int, Str] Nothing e
+evalExprType e@(EAdd expr1 Minus expr2) = checkTwoArgExpression expr1 expr2 [Int] Nothing e
+evalExprType e@(ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str] (Just Bool) e
+evalExprType e@(EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing e
+evalExprType e@(EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing e
 evalExprType e@(EApp ident arguments) = do
     Fun type_ argTypes <- getIdentType ident funEnv (undeclaredFunctionErr ident)
     actTypes <- mapM evalExprType arguments
@@ -140,7 +142,7 @@ checkIfVarDeclared ident = do
     env <- ask
     case Map.lookup ident (varEnv env) of
         Just (VarEnvElem t depth) ->
-            (if depth <= (actBlockDepth env) then
+            (if (actBlockDepth env) <= depth then
                 throwError $ duplicatedVariableErr ident
             else
                 return ())
@@ -458,6 +460,7 @@ hasReturn :: Stmt -> Bool
 hasReturn (Ret _) = True
 hasReturn VRet = True
 hasReturn (CondElse _ stmt1 stmt2) = (hasReturn stmt1) && (hasReturn stmt2)
+hasReturn (BStmt (Block stmts)) = any hasReturn stmts
 hasReturn _ = False
 
 -- After deleting unnecessary statements
