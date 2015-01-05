@@ -60,6 +60,9 @@ data Instruction =
     GetElementPtr Registry Integer Name |
     FunDecl Name Type [Type]
 
+identReg :: Ident -> Registry
+identReg (Ident name) = '%':name
+
 regName :: Counter -> Registry
 regName regNum = "%r" ++ (show regNum)
 
@@ -131,7 +134,7 @@ instance Show Instruction where
         printf "br %s, label %s, label %s" (show val) ('%':(label labelNum1)) ('%':(label labelNum2))
     show (Jump labelNum) = printf "br label %s" ('%':(label labelNum))
     show (Phi result t exprsFromLabels) = 
-        printf "%s = phi %s %s" result (show t) (showPhiExprs exprsFromLabels)
+        printf "%s = phi %s %s" result (showLLVMType t) (showPhiExprs exprsFromLabels)
     show (GetElementPtr resultReg length constName) = 
         printf "%s = getelementptr inbounds [%s x i8]* %s, i32 0, i32 0" resultReg (show length) constName
     show (FunDecl name retType argTypes) =
@@ -308,17 +311,19 @@ addNewLLVMBlock = do
     }
     return next
 
-emitBinOpInstruction :: Expr -> Expr -> BinOp -> Registry -> Eval (Type, Instruction)
-emitBinOpInstruction e1 e2 operator resultReg = do
-    val1 <- emitExpr e1
-    val2 <- emitExpr e2
-    return (Int, BinOpExpr resultReg operator val1 val2)
+emitBinOpInstrToBlock :: Expr -> Expr -> BinOp -> Registry -> LabelNum -> Eval Type
+emitBinOpInstrToBlock e1 e2 operator resultReg blockNum = do
+    val1 <- emitExprToBlock e1 blockNum
+    val2 <- emitExprToBlock e2 blockNum
+    addInstructionToBlock (BinOpExpr resultReg operator val1 val2) blockNum
+    return Int
 
-emitRelOpInstruction :: Expr -> Expr -> RelOp -> Registry -> Eval (Type, Instruction)
-emitRelOpInstruction e1 e2 relOp resultReg = do
-    val1 <- emitExpr e1
-    val2 <- emitExpr e2
-    return (Bool, RelOpExpr resultReg relOp val1 val2)
+emitRelOpInstrToBlock :: Expr -> Expr -> RelOp -> Registry -> LabelNum -> Eval Type
+emitRelOpInstrToBlock e1 e2 relOp resultReg blockNum = do
+    val1 <- emitExprToBlock e1 blockNum
+    val2 <- emitExprToBlock e2 blockNum
+    addInstructionToBlock (RelOpExpr resultReg relOp val1 val2) blockNum
+    return Bool
 
 -- TODO: useless
 {-
@@ -334,44 +339,45 @@ negate (ERel e1 EQU e2) = ERel e1 NE e2
 negate (ERel e1 NE e2) = ERel e1 EQU e2
 -}
 
-emitExprInstruction :: Expr -> Registry -> Eval (Type, Instruction)
-emitExprInstruction (EVar ident) resultReg = do
+emitExprInstructionToBlock :: Expr -> Registry -> LabelNum -> Eval Type
+emitExprInstructionToBlock (EVar ident) resultReg blockNum = do
     env <- ask
     let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
-    let instr = Load resultReg t reg
-    return (t, instr)
-emitExprInstruction (EApp ident args) resultReg = do
+    addInstructionToBlock (Load resultReg t reg) blockNum
+    return t
+emitExprInstructionToBlock (EApp ident args) resultReg blockNum = do
     env <- ask
     let Just (EnvElem name t) = Map.lookup ident (funEnv env)
     argReprs <- mapM emitExpr args
-    let instr = Call resultReg t name argReprs
-    return (t, instr)
-emitExprInstruction (Neg expr) resultReg =
-    emitExprInstruction (EAdd (ELitInt 0) Minus expr) resultReg
-emitExprInstruction (Not expr) resultReg = do
-    val <- emitExpr expr
-    return (Bool, NotExpr resultReg val)
-emitExprInstruction (EMul expr1 Times expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 Mul resultReg
-emitExprInstruction (EMul expr1 Div expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 DivOp resultReg
-emitExprInstruction (EMul expr1 Mod expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 ModOp resultReg
+    addInstructionToBlock (Call resultReg t name argReprs) blockNum
+    return t
+emitExprInstructionToBlock (Neg expr) resultReg blockNum =
+    emitExprInstructionToBlock (EAdd (ELitInt 0) Minus expr) resultReg blockNum
+emitExprInstructionToBlock (Not expr) resultReg blockNum = do
+    val <- emitExprToBlock expr blockNum
+    addInstructionToBlock (NotExpr resultReg val) blockNum
+    return Bool
+emitExprInstructionToBlock (EMul expr1 Times expr2) resultReg blockNum =
+    emitBinOpInstrToBlock expr1 expr2 Mul resultReg blockNum
+emitExprInstructionToBlock (EMul expr1 Div expr2) resultReg blockNum =
+    emitBinOpInstrToBlock expr1 expr2 DivOp resultReg blockNum
+emitExprInstructionToBlock (EMul expr1 Mod expr2) resultReg blockNum =
+    emitBinOpInstrToBlock expr1 expr2 ModOp resultReg blockNum
 -- Adding is handled separately in emitExpr
-emitExprInstruction (EAdd expr1 Minus expr2) resultReg =
-    emitBinOpInstruction expr1 expr2 Sub resultReg
-emitExprInstruction (ERel expr1 LTH expr2) resultReg =
-    emitRelOpInstruction expr1 expr2 LTH resultReg
-emitExprInstruction (ERel expr1 LE expr2) resultReg =
-    emitRelOpInstruction expr1 expr2 LE resultReg
-emitExprInstruction (ERel expr1 GTH expr2) resultReg =
-    emitRelOpInstruction expr1 expr2 GTH resultReg
-emitExprInstruction (ERel expr1 GE expr2) resultReg =
-    emitRelOpInstruction expr1 expr2 GE resultReg
-emitExprInstruction (ERel expr1 EQU expr2) resultReg =
-    emitRelOpInstruction expr1 expr2 EQU resultReg
-emitExprInstruction (ERel expr1 NE expr2) resultReg =
-    emitRelOpInstruction expr1 expr2 NE resultReg
+emitExprInstructionToBlock (EAdd expr1 Minus expr2) resultReg blockNum =
+    emitBinOpInstrToBlock expr1 expr2 Sub resultReg blockNum
+emitExprInstructionToBlock (ERel expr1 LTH expr2) resultReg blockNum =
+    emitRelOpInstrToBlock expr1 expr2 LTH resultReg blockNum
+emitExprInstructionToBlock (ERel expr1 LE expr2) resultReg blockNum =
+    emitRelOpInstrToBlock expr1 expr2 LE resultReg blockNum
+emitExprInstructionToBlock (ERel expr1 GTH expr2) resultReg blockNum =
+    emitRelOpInstrToBlock expr1 expr2 GTH resultReg blockNum
+emitExprInstructionToBlock (ERel expr1 GE expr2) resultReg blockNum =
+    emitRelOpInstrToBlock expr1 expr2 GE resultReg blockNum
+emitExprInstructionToBlock (ERel expr1 EQU expr2) resultReg blockNum =
+    emitRelOpInstrToBlock expr1 expr2 EQU resultReg blockNum
+emitExprInstructionToBlock (ERel expr1 NE expr2) resultReg blockNum =
+    emitRelOpInstrToBlock expr1 expr2 NE resultReg blockNum
 
 emitExprToBlock :: Expr -> LabelNum -> Eval ExpVal
 emitExprToBlock (EAnd expr1 expr2) labelNum = do
@@ -396,8 +402,7 @@ emitExprToBlock (EOr expr1 expr2) labelNum = do
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock expr labelNum = do
     result <- getNextRegistry
-    (t, instr) <- emitExprInstruction expr result
-    addInstructionToBlock instr labelNum
+    t <- emitExprInstructionToBlock expr result labelNum
     return $ ExpVal {repr = RegVal result, type_ = t}
 
 llvmStrLen :: String -> Integer
@@ -471,35 +476,35 @@ emitExpr expr = do
     actBlock <- getActBlockNum
     emitExprToBlock expr actBlock
 
-emitDeclarations :: Type -> [Item] -> [Instruction] -> Eval (Environment, [Instruction])
-emitDeclarations type_ [] accu = do
+declare :: Ident -> ExpVal -> Eval Environment
+declare ident val = do
     env <- ask
-    return (env, accu)
-emitDeclarations t (item:items) accu = case item of
+    reg <- getNextRegistry
+    let t = type_ val
+    let env' = Environment {
+        varEnv = Map.insert ident (EnvElem reg t) (varEnv env),
+        funEnv = funEnv env
+    }
+    let alloca = Alloca reg t
+    let store = StoreInstr val reg
+    addInstructions [store, alloca]
+    return env'
+
+emitDeclarations :: Type -> [Item] -> Eval Environment
+emitDeclarations _ [] = ask
+emitDeclarations t (item:items) = case item of
     Init ident expr -> (do
         val <- emitExpr expr
-        (env, updatedAccu) <- declareItem ident val accu
-        local (\_ -> env) (emitDeclarations t items updatedAccu))
+        env <- declare ident val
+        local (\_ -> env) (emitDeclarations t items))
     NoInit ident -> do
         emptyStrReg <- getStringName ""
         val <- case t of
             Int -> return $ numExpVal 0
             Bool -> return falseExpVal
             Str -> return $ ExpVal {repr = RegVal emptyStrReg, type_ = Str}
-        (env, updatedAccu) <- declareItem ident val accu
-        local (\_ -> env) (emitDeclarations t items updatedAccu)
-    where
-        declareItem :: Ident -> ExpVal -> [Instruction] -> Eval (Environment, [Instruction])
-        declareItem ident val accu = do
-            env <- ask
-            reg <- getNextRegistry
-            let env' = Environment {
-                varEnv = Map.insert ident (EnvElem reg t) (varEnv env),
-                funEnv = funEnv env
-            }
-            let alloca = Alloca reg t
-            let store = StoreInstr val reg
-            return (env', (store:(alloca:accu)))
+        env <- declare ident val
+        local (\_ -> env) (emitDeclarations t items)
 
 emitCondExpr :: Expr -> LabelNum -> LabelNum -> LabelNum -> Eval ()
 emitCondExpr (EAnd e1 e2) actBlock trueBlock falseBlock = do
@@ -511,6 +516,8 @@ emitCondExpr (EOr e1 e2) actBlock trueBlock falseBlock = do
     emitCondExpr e1 actBlock trueBlock firstFalse
     emitCondExpr e2 firstFalse trueBlock falseBlock
 emitCondExpr expr actBlock trueBlock falseBlock = do
+    debug $ expr
+    debug $ actBlock
     val <- emitExprToBlock expr actBlock
     setLastInstructionInBlock (CondJump val trueBlock falseBlock) actBlock
 
@@ -523,10 +530,7 @@ emitStmt (Ass ident expr) = do
     let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
     addInstruction $ StoreInstr val reg
     ask
-emitStmt (Decl type_ items) = do
-    (env, instructions) <- emitDeclarations type_ items []
-    addInstructions instructions
-    return env
+emitStmt (Decl type_ items) = emitDeclarations type_ items
 emitStmt (Incr ident) =
     emitStmt $ Ass ident (EAdd (EVar ident) Plus (ELitInt 1))
 emitStmt (Decr ident) =
@@ -614,25 +618,12 @@ addCompiled compiledInstructions =  do
         compiled = compiledInstructions ++ (compiled store)
     }
 
-identReg :: Ident -> Registry
-identReg (Ident name) = '%':name
-
 showLLVMArgs :: [Arg] -> String
 showLLVMArgs args = printWithSeparator (map showLLVMArg args) ","
     where
         showLLVMArg :: Arg -> String
         showLLVMArg (Arg type_ ident) = printf "%s %s" (showLLVMType type_) (identReg ident)
 
-addArgs :: [Arg] -> Eval Environment
-addArgs [] = ask
-addArgs ((Arg type_ ident):args) = do
-    local addArg (addArgs args)
-    where
-        addArg :: Environment -> Environment
-        addArg env = Environment {
-            varEnv = Map.insert ident (EnvElem (identReg ident) type_) (varEnv env),
-            funEnv = funEnv env
-        }
 
 compileBlock :: LLVMBlock -> [String]
 compileBlock block = ["", formatInstr $ lastInstruction] ++ (map formatInstr (instructions block))
@@ -678,22 +669,40 @@ compileBlocksInstructions = do
 debug :: Show a => a -> Eval ()
 debug a = liftIO $ putStrLn (show a)
 
-
 debugStore :: Eval ()
 debugStore = do
     s <- get
     debug s
     debug ""
 
+addArgs :: [Arg] -> Eval Environment
+addArgs [] = ask
+addArgs ((Arg type_ ident):args) = do
+    local addArg (addArgs args)
+    where
+        addArg :: Environment -> Environment
+        addArg env = Environment {
+            varEnv = Map.insert ident (EnvElem (identReg ident) type_) (varEnv env),
+            funEnv = funEnv env
+        }
+
 emitTopDef :: TopDef -> Eval ()
 emitTopDef (FnDef t ident args block) = do
     let funHeader = printf "define %s %s(%s) {" (showLLVMType t) (globalName ident) (showLLVMArgs args)
     addCompiled [funHeader]
-    env <- addArgs args
     addNewLLVMBlock
+    env <- declareArgs args
     local (\_ -> env) (emitBlock block)
     compileBlocksInstructions
     addCompiled ["", "}"]
+    where
+        declareArgs :: [Arg] -> Eval Environment
+        declareArgs [] = ask
+        declareArgs ((Arg t ident):args) = do
+            let reg = identReg ident
+            let val = ExpVal {repr = RegVal reg, type_ = t}
+            env <- declare ident val
+            local (\_ -> env) (declareArgs args)
 
 reverseInstructions :: Eval ()
 reverseInstructions = do
