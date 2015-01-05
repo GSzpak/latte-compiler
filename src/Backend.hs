@@ -75,6 +75,9 @@ constName strNum = printf "@.str%s" (show strNum)
 label :: LabelNum -> Label
 label num = printf "label%s" (show num)
 
+llvmStrLen :: String -> Integer
+llvmStrLen s = (toInteger $ length s) + 1
+
 showLLVMRelOp :: RelOp -> String
 showLLVMRelOp LTH = "slt"
 showLLVMRelOp LE = "sle"
@@ -363,7 +366,7 @@ emitExprInstructionToBlock (EMul expr1 Div expr2) resultReg blockNum =
     emitBinOpInstrToBlock expr1 expr2 DivOp resultReg blockNum
 emitExprInstructionToBlock (EMul expr1 Mod expr2) resultReg blockNum =
     emitBinOpInstrToBlock expr1 expr2 ModOp resultReg blockNum
--- Adding is handled separately in emitExpr
+-- Adding is handled separately in emitExprToBlock
 emitExprInstructionToBlock (EAdd expr1 Minus expr2) resultReg blockNum =
     emitBinOpInstrToBlock expr1 expr2 Sub resultReg blockNum
 emitExprInstructionToBlock (ERel expr1 LTH expr2) resultReg blockNum =
@@ -378,35 +381,6 @@ emitExprInstructionToBlock (ERel expr1 EQU expr2) resultReg blockNum =
     emitRelOpInstrToBlock expr1 expr2 EQU resultReg blockNum
 emitExprInstructionToBlock (ERel expr1 NE expr2) resultReg blockNum =
     emitRelOpInstrToBlock expr1 expr2 NE resultReg blockNum
-
-emitExprToBlock :: Expr -> LabelNum -> Eval ExpVal
-emitExprToBlock (EAnd expr1 expr2) labelNum = do
-    val1 <- emitExprToBlock expr1 labelNum
-    numTrue <- addNewLLVMBlock
-    val2 <- emitExprToBlock expr2 numTrue
-    numNext <- addNewLLVMBlock
-    setLastInstructionInBlock (CondJump val1 numTrue numNext) labelNum
-    setLastInstructionInBlock (Jump numNext) numTrue
-    resultReg <- getNextRegistry
-    addInstructionToBlock (Phi resultReg Bool [(falseExpVal, labelNum), (val2, numTrue)]) numNext
-    return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
-emitExprToBlock (EOr expr1 expr2) labelNum = do
-    val1 <- emitExprToBlock expr1 labelNum
-    numFalse <- addNewLLVMBlock
-    val2 <- emitExprToBlock expr2 numFalse
-    numNext <- addNewLLVMBlock
-    setLastInstructionInBlock (CondJump val1 numNext numFalse) labelNum
-    setLastInstructionInBlock (Jump numNext) numFalse
-    resultReg <- getNextRegistry
-    addInstructionToBlock (Phi resultReg Bool [(trueExpVal, labelNum), (val2, numFalse)]) numNext
-    return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
-emitExprToBlock expr labelNum = do
-    result <- getNextRegistry
-    t <- emitExprInstructionToBlock expr result labelNum
-    return $ ExpVal {repr = RegVal result, type_ = t}
-
-llvmStrLen :: String -> Integer
-llvmStrLen s = (toInteger $ length s) + 1
 
 getStringName :: String -> Eval Name
 getStringName s = do
@@ -426,22 +400,22 @@ getStringName s = do
             }
             return name
 
-emitConcat :: ExpVal -> ExpVal -> Eval ExpVal
-emitConcat val1 val2 = do
+emitConcatToBlock :: ExpVal -> ExpVal -> LabelNum -> Eval ExpVal
+emitConcatToBlock val1 val2 blockNum = do
     (lenReg1, lenVal1) <- getExpVal Int
-    addInstruction $ Call lenReg1 Int (globalName' "strlen") [val1]
+    addInstructionToBlock (Call lenReg1 Int (globalName' "strlen") [val1]) blockNum
     (lenReg2, lenVal2) <- getExpVal Int
-    addInstruction $ Call lenReg2 Int (globalName' "strlen") [val2]
+    addInstructionToBlock (Call lenReg2 Int (globalName' "strlen") [val2]) blockNum
     (tempReg1, tempVal1) <- getExpVal Int
-    addInstruction $ BinOpExpr tempReg1 Add lenVal1 (numExpVal 1)
+    addInstructionToBlock (BinOpExpr tempReg1 Add lenVal1 (numExpVal 1)) blockNum
     (tempReg2, tempVal2) <- getExpVal Int
-    addInstruction $ BinOpExpr tempReg2 Add tempVal1 lenVal2
+    addInstructionToBlock (BinOpExpr tempReg2 Add tempVal1 lenVal2) blockNum
     (mallocReg, mallocVal) <- getExpVal Str
-    addInstruction $ Call mallocReg Str (globalName' "malloc") [tempVal2]
+    addInstructionToBlock (Call mallocReg Str (globalName' "malloc") [tempVal2]) blockNum
     (strcpyReg, strcpyVal) <- getExpVal Str
-    addInstruction $ Call strcpyReg Str (globalName' "strcpy") [mallocVal, val1]
+    addInstructionToBlock (Call strcpyReg Str (globalName' "strcpy") [mallocVal, val1]) blockNum
     (strcatReg, strcatVal) <- getExpVal Str
-    addInstruction $ Call strcatReg Str (globalName' "strcat") [strcpyVal, val2]
+    addInstructionToBlock (Call strcatReg Str (globalName' "strcat") [strcpyVal, val2]) blockNum
     return strcatVal
     where
         getExpVal :: Type -> Eval (Registry, ExpVal)
@@ -452,26 +426,51 @@ emitConcat val1 val2 = do
         globalName' :: String -> Name
         globalName' s = globalName (Ident s)
 
-emitExpr :: Expr -> Eval ExpVal
-emitExpr (ELitInt n) = return $ numExpVal n
-emitExpr ELitTrue = return $ boolExpVal True
-emitExpr ELitFalse = return $ boolExpVal False
-emitExpr (EString s) = do
-    store <- get
+emitExprToBlock :: Expr -> LabelNum -> Eval ExpVal
+emitExprToBlock (ELitInt n) _ = return $ numExpVal n
+emitExprToBlock ELitTrue _ = return $ boolExpVal True
+emitExprToBlock ELitFalse _ = return $ boolExpVal False
+emitExprToBlock (EString s) blockNum = do
     name <- getStringName s
     registry <- getNextRegistry
-    addInstruction $ GetElementPtr registry (llvmStrLen s) name
+    addInstructionToBlock (GetElementPtr registry (llvmStrLen s) name) blockNum
     return $ ExpVal {repr = RegVal registry, type_ = Str}
-emitExpr (EAdd expr1 Plus expr2) = do
-    val1 <- emitExpr expr1 
-    val2 <- emitExpr expr2
+emitExprToBlock (EAdd expr1 Plus expr2) blockNum = do
+    val1 <- emitExprToBlock expr1 blockNum 
+    val2 <- emitExprToBlock expr2 blockNum
     -- after type checking
     case type_ val1 of
-        Str -> emitConcat val1 val2
+        Str -> emitConcatToBlock val1 val2 blockNum
         Int -> do
             resultReg <- getNextRegistry
-            addInstruction $ BinOpExpr resultReg Add val1 val2
+            addInstructionToBlock (BinOpExpr resultReg Add val1 val2) blockNum
             return $ ExpVal {repr = RegVal resultReg, type_ = Int}
+emitExprToBlock (EAnd expr1 expr2) blockNum = do
+    val1 <- emitExprToBlock expr1 blockNum
+    numTrue <- addNewLLVMBlock
+    val2 <- emitExprToBlock expr2 numTrue
+    numNext <- addNewLLVMBlock
+    setLastInstructionInBlock (CondJump val1 numTrue numNext) blockNum
+    setLastInstructionInBlock (Jump numNext) numTrue
+    resultReg <- getNextRegistry
+    addInstructionToBlock (Phi resultReg Bool [(falseExpVal, blockNum), (val2, numTrue)]) numNext
+    return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
+emitExprToBlock (EOr expr1 expr2) blockNum = do
+    val1 <- emitExprToBlock expr1 blockNum
+    numFalse <- addNewLLVMBlock
+    val2 <- emitExprToBlock expr2 numFalse
+    numNext <- addNewLLVMBlock
+    setLastInstructionInBlock (CondJump val1 numNext numFalse) blockNum
+    setLastInstructionInBlock (Jump numNext) numFalse
+    resultReg <- getNextRegistry
+    addInstructionToBlock (Phi resultReg Bool [(trueExpVal, blockNum), (val2, numFalse)]) numNext
+    return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
+emitExprToBlock expr blockNum = do
+    result <- getNextRegistry
+    t <- emitExprInstructionToBlock expr result blockNum
+    return $ ExpVal {repr = RegVal result, type_ = t}
+
+emitExpr :: Expr -> Eval ExpVal
 emitExpr expr = do
     actBlock <- getActBlockNum
     emitExprToBlock expr actBlock
@@ -516,8 +515,6 @@ emitCondExpr (EOr e1 e2) actBlock trueBlock falseBlock = do
     emitCondExpr e1 actBlock trueBlock firstFalse
     emitCondExpr e2 firstFalse trueBlock falseBlock
 emitCondExpr expr actBlock trueBlock falseBlock = do
-    debug $ expr
-    debug $ actBlock
     val <- emitExprToBlock expr actBlock
     setLastInstructionInBlock (CondJump val trueBlock falseBlock) actBlock
 
