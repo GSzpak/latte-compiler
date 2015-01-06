@@ -338,7 +338,7 @@ emitExprInstructionToBlock (EApp ident args) resultReg blockNum = do
     env <- ask
     let Just (EnvElem name t) = Map.lookup ident (funEnv env)
     argReprs <- mapM emitExpr args
-    addInstructionToBlock (Call resultReg t name argReprs) blockNum
+    addInstruction $ Call resultReg t name argReprs 
     return t
 emitExprInstructionToBlock (Neg expr) resultReg blockNum =
     emitExprInstructionToBlock (EAdd (ELitInt 0) Minus expr) resultReg blockNum
@@ -409,9 +409,9 @@ emitExprToBlock (EAdd expr1 Plus expr2) blockNum = do
             addInstructionToBlock (BinOpExpr resultReg Add val1 val2) blockNum
             return $ ExpVal {repr = RegVal resultReg, type_ = Int}
 emitExprToBlock (EAnd expr1 expr2) blockNum = do
-    val1 <- emitExprToBlock expr1 blockNum
+    val1 <- emitExpr expr1
     numTrue <- addNewLLVMBlock
-    val2 <- emitExprToBlock expr2 numTrue
+    val2 <- emitExpr expr2
     numNext <- addNewLLVMBlock
     setLastInstructionInBlock (CondJump val1 numTrue numNext) blockNum
     setLastInstructionInBlock (Jump numNext) numTrue
@@ -419,9 +419,9 @@ emitExprToBlock (EAnd expr1 expr2) blockNum = do
     addInstructionToBlock (Phi resultReg Bool [(falseExpVal, blockNum), (val2, numTrue)]) numNext
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock (EOr expr1 expr2) blockNum = do
-    val1 <- emitExprToBlock expr1 blockNum
+    val1 <- emitExpr expr1
     numFalse <- addNewLLVMBlock
-    val2 <- emitExprToBlock expr2 numFalse
+    val2 <- emitExpr expr2
     numNext <- addNewLLVMBlock
     setLastInstructionInBlock (CondJump val1 numNext numFalse) blockNum
     setLastInstructionInBlock (Jump numNext) numFalse
@@ -733,7 +733,7 @@ emitProgram :: Program -> Eval ()
 emitProgram (Program topDefs) = do
     env <- declareBuiltIn
     env' <- local (\_ -> env) (declareFunctions topDefs)
-    local (\_ -> env') (sequence_ $ map emitTopDef (reverse topDefs))
+    local (\_ -> env') (sequence_ $ map emitTopDef topDefs)
     reverseInstructions
     addCompiled [""]
     addOuterDeclarations
