@@ -348,7 +348,7 @@ foldConstants (While expr stmt) = do
     return $ While folded stmt
 foldConstants (SExp expr) = do
     folded <- foldConstExpr expr
-    return $ SExp expr
+    return $ SExp folded
 foldConstants stmt = return stmt
 
 foldConstantsInBlock :: Block -> Eval Block

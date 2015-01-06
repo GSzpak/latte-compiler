@@ -1,8 +1,0 @@
-int main()
-{
-    boolean x = true;
-    if ((x || false) > false) {
-        printString("OK");
-    }
-    return 0;
-}
