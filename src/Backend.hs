@@ -432,26 +432,28 @@ emitExprToBlock (EAdd expr1 Plus expr2) = do
             addInstruction $ BinOpExpr resultReg Add val1 val2
             return $ ExpVal {repr = RegVal resultReg, type_ = Int}
 emitExprToBlock (EAnd expr1 expr2) = do
-    actBlockNum <- getActBlockNum
     val1 <- emitExpr expr1
+    actBlockNum1 <- getActBlockNum
     numTrue <- addNewLLVMBlock
     val2 <- emitExpr expr2
+    actBlockNum2 <- getActBlockNum
     numNext <- addNewLLVMBlock
-    setLastInstructionInBlock (CondJump val1 numTrue numNext) actBlockNum
-    setLastInstructionInBlock (Jump numNext) numTrue
+    setLastInstructionInBlock (CondJump val1 numTrue numNext) actBlockNum1
+    setLastInstructionInBlock (Jump numNext) actBlockNum2
     resultReg <- getNextRegistry
-    addInstruction $ Phi resultReg Bool [(falseExpVal, actBlockNum), (val2, numTrue)]
+    addInstruction $ Phi resultReg Bool [(falseExpVal, actBlockNum1), (val2, actBlockNum2)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock (EOr expr1 expr2) = do
-    actBlockNum <- getActBlockNum
     val1 <- emitExpr expr1
+    actBlockNum1 <- getActBlockNum
     numFalse <- addNewLLVMBlock
     val2 <- emitExpr expr2
+    actBlockNum2 <- getActBlockNum
     numNext <- addNewLLVMBlock
-    setLastInstructionInBlock (CondJump val1 numNext numFalse) actBlockNum
-    setLastInstructionInBlock (Jump numNext) numFalse
+    setLastInstructionInBlock (CondJump val1 numNext numFalse) actBlockNum1
+    setLastInstructionInBlock (Jump numNext) actBlockNum2
     resultReg <- getNextRegistry
-    addInstruction $ Phi resultReg Bool [(trueExpVal, actBlockNum), (val2, numFalse)]
+    addInstruction $ Phi resultReg Bool [(trueExpVal, actBlockNum1), (val2, actBlockNum2)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock expr = do
     result <- getNextRegistry
