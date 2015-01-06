@@ -250,15 +250,6 @@ boolFromExpr :: Expr -> Bool
 boolFromExpr ELitTrue = True
 boolFromExpr ELitFalse = False
 
-foldBoolExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Bool -> Bool -> Bool) -> Eval Expr
-foldBoolExpr expr1 expr2 constructor fun = do
-    folded1 <- foldConstExpr expr1
-    folded2 <- foldConstExpr expr2
-    if (isConstant folded1 && isConstant folded2) then
-        return $ exprFromBool $ fun (boolFromExpr folded1) (boolFromExpr folded2)
-    else
-        return $ constructor folded1 folded2
-
 foldBinOpExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Integer -> Integer -> Integer) -> Bool -> Eval Expr
 foldBinOpExpr e1 e2 constructor fun checkDivision = do
     folded1 <- foldConstExpr e1
@@ -275,7 +266,7 @@ foldRelExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Expr -> Expr -> Bool) 
 foldRelExpr expr1 expr2 constructor relOper = do
     folded1 <- foldConstExpr expr1
     folded2 <- foldConstExpr expr2
-    if (isConstant folded1 && isConstant folded2) then
+    if ((isConstant folded1) && (isConstant folded2)) then
         return $ exprFromBool $ relOper folded1 folded2
     else
         return $ constructor folded1 folded2
@@ -311,8 +302,24 @@ foldConstExpr (EAdd e1 Plus e2) = do
         (ELitInt n1, ELitInt n2) -> return $ ELitInt $ n1 + n2
         _ -> return $ EAdd folded1 Plus folded2
 foldConstExpr (EAdd e1 Minus e2) = foldBinOpExpr e1 e2 ((flip EAdd) Minus) (-) False
-foldConstExpr (EAnd e1 e2) = foldBoolExpr e1 e2 EAnd (&&)
-foldConstExpr (EOr e1 e2) = foldBoolExpr e1 e2 EOr (||)
+foldConstExpr (EAnd e1 e2) = do
+    folded1 <- foldConstExpr e1
+    folded2 <- foldConstExpr e2
+    case (folded1, folded2) of
+        (_, ELitFalse) -> return ELitFalse
+        (ELitFalse, _) -> return ELitFalse
+        (_, ELitTrue) -> return folded1
+        (ELitTrue, _) -> return folded2
+        (_, _) -> return $ EAnd folded1 folded2
+foldConstExpr (EOr e1 e2) = do
+    folded1 <- foldConstExpr e1
+    folded2 <- foldConstExpr e2
+    case (folded1, folded2) of
+        (_, ELitTrue) -> return ELitTrue
+        (ELitTrue, _) -> return ELitTrue
+        (_, ELitFalse) -> return folded1
+        (ELitFalse, _) -> return folded2
+        (_, _) -> return $ EOr folded1 folded2
 foldConstExpr (ERel e1 LTH e2) = foldRelExpr e1 e2 ((flip ERel) LTH) (<)
 foldConstExpr (ERel e1 LE e2) = foldRelExpr e1 e2 ((flip ERel) LE) (<=)
 foldConstExpr (ERel e1 GTH e2) = foldRelExpr e1 e2 ((flip ERel) GTH) (>)
@@ -393,8 +400,8 @@ checkFunction fun@(FnDef type_ ident args block) = do
     env <- declareArgs args
     let env' = prepareBlockCheck env
     local (\_ -> env') (checkBlock block)
-    foldedConstants <- foldConstantsInBlock block
-    let (Block optimized) = optimizeBlock foldedConstants
+    foldedConstantsBlock <- foldConstantsInBlock block
+    let (Block optimized) = optimizeBlock foldedConstantsBlock
     if (type_ /= Void) && (not (any hasReturn optimized)) then
         throwError $ printf "No \"return\" instruction in function %s" (name ident)
     else
