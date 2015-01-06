@@ -294,16 +294,10 @@ changeBlock blockNum updateFun = do
         compiled = compiled store
     }
 
-addInstructionsToBlock :: [Instruction] -> BlockNum -> Eval ()
-addInstructionsToBlock instrs labelNum = changeBlock labelNum (addToBlock instrs)
-
 addInstructions :: [Instruction] -> Eval ()
 addInstructions instrs = do
     store <- get
-    addInstructionsToBlock instrs (actBlockNum store)
-
-addInstructionToBlock :: Instruction -> BlockNum -> Eval ()
-addInstructionToBlock instr labelNum = addInstructionsToBlock [instr] labelNum
+    changeBlock (actBlockNum store) (addToBlock instrs)
 
 addInstruction :: Instruction -> Eval ()
 addInstruction instr = addInstructions [instr]
@@ -337,59 +331,59 @@ addNewLLVMBlock = do
     }
     return next
 
-emitBinOpInstrToBlock :: Expr -> Expr -> BinOp -> Registry -> Eval Type
-emitBinOpInstrToBlock e1 e2 operator resultReg = do
+emitBinOpInstr :: Expr -> Expr -> BinOp -> Registry -> Eval Type
+emitBinOpInstr e1 e2 operator resultReg = do
     val1 <- emitExpr e1
     val2 <- emitExpr e2
     addInstruction $ BinOpExpr resultReg operator val1 val2
     return Int
 
-emitRelOpInstrToBlock :: Expr -> Expr -> RelOp -> Registry -> Eval Type
-emitRelOpInstrToBlock e1 e2 relOp resultReg = do
+emitRelOpInstr :: Expr -> Expr -> RelOp -> Registry -> Eval Type
+emitRelOpInstr e1 e2 relOp resultReg = do
     val1 <- emitExpr e1 
     val2 <- emitExpr e2
     addInstruction $ RelOpExpr resultReg relOp val1 val2
     return Bool
 
-emitExprInstructionToBlock :: Expr -> Registry -> Eval Type
-emitExprInstructionToBlock (EVar ident) resultReg = do
+emitExprInstruction :: Expr -> Registry -> Eval Type
+emitExprInstruction (EVar ident) resultReg = do
     env <- ask
     let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
     addInstruction $ Load resultReg t reg
     return t
-emitExprInstructionToBlock (EApp ident args) resultReg = do
+emitExprInstruction (EApp ident args) resultReg = do
     env <- ask
     let Just (EnvElem name t) = Map.lookup ident (funEnv env)
     argReprs <- mapM emitExpr args
     addInstruction $ Call resultReg t name argReprs
     return t
-emitExprInstructionToBlock (Neg expr) resultReg =
-    emitExprInstructionToBlock (EAdd (ELitInt 0) Minus expr) resultReg
-emitExprInstructionToBlock (Not expr) resultReg = do
+emitExprInstruction (Neg expr) resultReg =
+    emitExprInstruction (EAdd (ELitInt 0) Minus expr) resultReg
+emitExprInstruction (Not expr) resultReg = do
     val <- emitExpr expr
     addInstruction $ NotExpr resultReg val
     return Bool
-emitExprInstructionToBlock (EMul expr1 Times expr2) resultReg =
-    emitBinOpInstrToBlock expr1 expr2 Mul resultReg
-emitExprInstructionToBlock (EMul expr1 Div expr2) resultReg =
-    emitBinOpInstrToBlock expr1 expr2 DivOp resultReg 
-emitExprInstructionToBlock (EMul expr1 Mod expr2) resultReg =
-    emitBinOpInstrToBlock expr1 expr2 ModOp resultReg
+emitExprInstruction (EMul expr1 Times expr2) resultReg =
+    emitBinOpInstr expr1 expr2 Mul resultReg
+emitExprInstruction (EMul expr1 Div expr2) resultReg =
+    emitBinOpInstr expr1 expr2 DivOp resultReg 
+emitExprInstruction (EMul expr1 Mod expr2) resultReg =
+    emitBinOpInstr expr1 expr2 ModOp resultReg
 -- Adding is handled separately in emitExpr
-emitExprInstructionToBlock (EAdd expr1 Minus expr2) resultReg =
-    emitBinOpInstrToBlock expr1 expr2 Sub resultReg
-emitExprInstructionToBlock (ERel expr1 LTH expr2) resultReg =
-    emitRelOpInstrToBlock expr1 expr2 LTH resultReg
-emitExprInstructionToBlock (ERel expr1 LE expr2) resultReg =
-    emitRelOpInstrToBlock expr1 expr2 LE resultReg 
-emitExprInstructionToBlock (ERel expr1 GTH expr2) resultReg =
-    emitRelOpInstrToBlock expr1 expr2 GTH resultReg
-emitExprInstructionToBlock (ERel expr1 GE expr2) resultReg =
-    emitRelOpInstrToBlock expr1 expr2 GE resultReg 
-emitExprInstructionToBlock (ERel expr1 EQU expr2) resultReg =
-    emitRelOpInstrToBlock expr1 expr2 EQU resultReg 
-emitExprInstructionToBlock (ERel expr1 NE expr2) resultReg =
-    emitRelOpInstrToBlock expr1 expr2 NE resultReg
+emitExprInstruction (EAdd expr1 Minus expr2) resultReg =
+    emitBinOpInstr expr1 expr2 Sub resultReg
+emitExprInstruction (ERel expr1 LTH expr2) resultReg =
+    emitRelOpInstr expr1 expr2 LTH resultReg
+emitExprInstruction (ERel expr1 LE expr2) resultReg =
+    emitRelOpInstr expr1 expr2 LE resultReg 
+emitExprInstruction (ERel expr1 GTH expr2) resultReg =
+    emitRelOpInstr expr1 expr2 GTH resultReg
+emitExprInstruction (ERel expr1 GE expr2) resultReg =
+    emitRelOpInstr expr1 expr2 GE resultReg 
+emitExprInstruction (ERel expr1 EQU expr2) resultReg =
+    emitRelOpInstr expr1 expr2 EQU resultReg 
+emitExprInstruction (ERel expr1 NE expr2) resultReg =
+    emitRelOpInstr expr1 expr2 NE resultReg
 
 getStringName :: String -> Eval Name
 getStringName s = do
@@ -409,16 +403,16 @@ getStringName s = do
             }
             return name
 
-emitExprToBlock :: Expr -> Eval ExpVal
-emitExprToBlock (ELitInt n) = return $ numExpVal n
-emitExprToBlock ELitTrue = return $ boolExpVal True
-emitExprToBlock ELitFalse = return $ boolExpVal False
-emitExprToBlock (EString s) = do
+emitExpr :: Expr -> Eval ExpVal
+emitExpr (ELitInt n) = return $ numExpVal n
+emitExpr ELitTrue = return $ boolExpVal True
+emitExpr ELitFalse = return $ boolExpVal False
+emitExpr (EString s) = do
     name <- getStringName s
     registry <- getNextRegistry
     addInstruction $ GetElementPtr registry (llvmStrLen s) name
     return $ ExpVal {repr = RegVal registry, type_ = Str}
-emitExprToBlock (EAdd expr1 Plus expr2) = do
+emitExpr (EAdd expr1 Plus expr2) = do
     val1 <- emitExpr expr1 
     val2 <- emitExpr expr2
     -- after type checking
@@ -431,7 +425,7 @@ emitExprToBlock (EAdd expr1 Plus expr2) = do
         Int -> do
             addInstruction $ BinOpExpr resultReg Add val1 val2
             return $ ExpVal {repr = RegVal resultReg, type_ = Int}
-emitExprToBlock (EAnd expr1 expr2) = do
+emitExpr (EAnd expr1 expr2) = do
     val1 <- emitExpr expr1
     actBlockNum1 <- getActBlockNum
     numTrue <- addNewLLVMBlock
@@ -443,7 +437,7 @@ emitExprToBlock (EAnd expr1 expr2) = do
     resultReg <- getNextRegistry
     addInstruction $ Phi resultReg Bool [(falseExpVal, actBlockNum1), (val2, actBlockNum2)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
-emitExprToBlock (EOr expr1 expr2) = do
+emitExpr (EOr expr1 expr2) = do
     val1 <- emitExpr expr1
     actBlockNum1 <- getActBlockNum
     numFalse <- addNewLLVMBlock
@@ -455,14 +449,10 @@ emitExprToBlock (EOr expr1 expr2) = do
     resultReg <- getNextRegistry
     addInstruction $ Phi resultReg Bool [(trueExpVal, actBlockNum1), (val2, actBlockNum2)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
-emitExprToBlock expr = do
-    result <- getNextRegistry
-    t <- emitExprInstructionToBlock expr result
-    return $ ExpVal {repr = RegVal result, type_ = t}
-
-emitExpr :: Expr -> Eval ExpVal
 emitExpr expr = do
-    emitExprToBlock expr
+    result <- getNextRegistry
+    t <- emitExprInstruction expr result
+    return $ ExpVal {repr = RegVal result, type_ = t}
 
 declare :: Ident -> ExpVal -> Eval Environment
 declare ident val = do
