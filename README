@@ -1,0 +1,7 @@
+Do uzyskania drzewa składni konkretnej wykorzystano BNF Converter.
+
+Struktura katalogów:
+-   src/ zawiera pliki źródłowe kompilatora (Backend.hs, Frontend.hs i Compiler.hs)
+    oraz pliki wygenerowane przez BNFC.
+-   lib/ zawiera runtime.ll i runtime.bc z definicjami funkcji: printInt, printString,
+    error, readInt, readString i concat_ (dla napisów)

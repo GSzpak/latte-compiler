@@ -412,7 +412,7 @@ checkFun (FnDef type_ ident args block) = do
     foldedConstantsBlock <- foldConstantsInBlock block
     let (Block optimized) = optimizeBlock foldedConstantsBlock
     if (type_ /= Void) && (not (any hasReturn optimized)) then
-        throwError $ printf "No \"return\" instruction"
+        throwError $ "No \"return\" instruction"
     else
         return $ FnDef type_ ident args (Block optimized)
     where
