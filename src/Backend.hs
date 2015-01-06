@@ -472,6 +472,7 @@ emitDeclarations :: Type -> [Item] -> Eval Environment
 emitDeclarations _ [] = ask
 emitDeclarations t (item:items) = case item of
     Init ident expr -> (do
+        env <- ask
         val <- emitExpr expr
         env <- declare ident val
         local (\_ -> env) (emitDeclarations t items))
@@ -501,7 +502,9 @@ emitCondExpr expr actBlock trueBlock falseBlock = do
 
 emitStmt :: Stmt -> Eval Environment
 emitStmt Empty = ask
-emitStmt (BStmt block) = emitBlock block
+emitStmt (BStmt block) = do
+    emitBlock block
+    ask
 emitStmt (Ass ident expr) = do
     env <- ask
     val <- emitExpr expr
