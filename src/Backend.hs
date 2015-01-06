@@ -78,13 +78,21 @@ label num = printf "label%s" (show num)
 llvmStrLen :: String -> Integer
 llvmStrLen s = (toInteger $ length s) + 1
 
-showLLVMRelOp :: RelOp -> String
-showLLVMRelOp LTH = "slt"
-showLLVMRelOp LE = "sle"
-showLLVMRelOp GTH = "sgt"
-showLLVMRelOp GE = "sge"
-showLLVMRelOp EQU = "eq"
-showLLVMRelOp NE = "ne"
+showSigned :: RelOp -> String
+showSigned LTH = "slt"
+showSigned LE = "sle"
+showSigned GTH = "sgt"
+showSigned GE = "sge"
+showSigned EQU = "eq"
+showSigned NE = "ne"
+
+showUnsigned :: RelOp -> String
+showUnsigned LTH = "ult"
+showUnsigned LE = "ule"
+showUnsigned GTH = "ugt"
+showUnsigned GE = "uge"
+showUnsigned EQU = "eq"
+showUnsigned NE = "ne"
 
 showLLVMType :: Type -> String
 showLLVMType Int = "i32"
@@ -112,13 +120,15 @@ instance Show Instruction where
             val2Repr = show $ repr val2
         in
             printf "%s = %s %s %s, %s" result (show binop) typeRepr val1Repr val2Repr
-    show (RelOpExpr result relop val1 val2) =
+    show (RelOpExpr result relOp val1 val2) =
         let
-            typeRepr = showLLVMType $ type_ val1
+            t = type_ val1
+            typeRepr = showLLVMType $ t
             val1Repr = show $ repr val1
             val2Repr = show $ repr val2
+            relOpRepr = if t == Int then showSigned relOp else showUnsigned relOp
         in
-            printf "%s = icmp %s %s %s, %s" result (showLLVMRelOp relop) typeRepr val1Repr val2Repr
+            printf "%s = icmp %s %s %s, %s" result relOpRepr typeRepr val1Repr val2Repr
     show (NotExpr result val) =
         printf "%s = xor i1 %s, true" result (show $ repr val)
     show (Load result t reg) = 
@@ -256,6 +266,19 @@ getActBlockNum :: Eval BlockNum
 getActBlockNum = do
     store <- get
     return $ actBlockNum store
+
+setActBlockNum :: BlockNum -> Eval ()
+setActBlockNum blockNum = do
+    store <- get
+    put $ Store {
+        blocks = blocks store,
+        actBlockNum = blockNum,
+        regCounter = regCounter store,
+        constCounter = constCounter store,
+        labelCounter = labelCounter store,
+        strConstants = strConstants store,
+        compiled = compiled store
+    }
 
 changeBlock :: BlockNum -> (LLVMBlock -> LLVMBlock) -> Eval ()
 changeBlock blockNum updateFun = do
@@ -417,7 +440,7 @@ emitExprToBlock (EAnd expr1 expr2) = do
     setLastInstructionInBlock (CondJump val1 numTrue numNext) actBlockNum
     setLastInstructionInBlock (Jump numNext) numTrue
     resultReg <- getNextRegistry
-    addInstructionToBlock (Phi resultReg Bool [(falseExpVal, actBlockNum), (val2, numTrue)]) numNext
+    addInstruction $ Phi resultReg Bool [(falseExpVal, actBlockNum), (val2, numTrue)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock (EOr expr1 expr2) = do
     actBlockNum <- getActBlockNum
@@ -428,7 +451,7 @@ emitExprToBlock (EOr expr1 expr2) = do
     setLastInstructionInBlock (CondJump val1 numNext numFalse) actBlockNum
     setLastInstructionInBlock (Jump numNext) numFalse
     resultReg <- getNextRegistry
-    addInstructionToBlock (Phi resultReg Bool [(trueExpVal, actBlockNum), (val2, numFalse)]) numNext
+    addInstruction $ Phi resultReg Bool [(trueExpVal, actBlockNum), (val2, numFalse)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
 emitExprToBlock expr = do
     result <- getNextRegistry
@@ -481,21 +504,8 @@ emitCondExpr expr actBlock trueBlock falseBlock = do
     newestBlock <- getActBlockNum
     setActBlockNum actBlock
     val <- emitExpr expr
-    setLastInstructionInBlock (CondJump val trueBlock falseBlock) actBlock
+    setLastInstruction $ CondJump val trueBlock falseBlock 
     setActBlockNum newestBlock
-    where
-        setActBlockNum :: BlockNum -> Eval ()
-        setActBlockNum blockNum = do
-            store <- get
-            put $ Store {
-                blocks = blocks store,
-                actBlockNum = blockNum,
-                regCounter = regCounter store,
-                constCounter = constCounter store,
-                labelCounter = labelCounter store,
-                strConstants = strConstants store,
-                compiled = compiled store
-            }
 
 emitStmt :: Stmt -> Eval Environment
 emitStmt Empty = ask
@@ -599,7 +609,6 @@ showLLVMArgs args = printWithSeparator (map showLLVMArg args) ","
     where
         showLLVMArg :: Arg -> String
         showLLVMArg (Arg type_ ident) = printf "%s %s" (showLLVMType type_) (identReg ident)
-
 
 compileBlock :: LLVMBlock -> [String]
 compileBlock block = ["", formatInstr $ lastInstruction] ++ (map formatInstr (instructions block))
