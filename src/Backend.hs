@@ -4,7 +4,6 @@ module Backend where
 import AbsLatte
 import qualified Data.List as List
 import qualified Data.Map as Map
-import Control.Monad.Error
 import Control.Monad.Reader
 import Control.Monad.State
 import Text.Printf
@@ -181,7 +180,7 @@ data Store = Store {
     compiled :: [String]
 } deriving Show
 
-type Eval a = ReaderT Environment (ErrorT String (StateT Store IO)) a
+type Eval a = ReaderT Environment (StateT Store IO) a
 
 emptyEnv :: Environment
 emptyEnv = Environment {
@@ -200,8 +199,8 @@ emptyStore = Store {
     compiled = []
 }
 
-runEval :: Environment -> Store -> Eval a -> IO (Either String a, Store)
-runEval env state eval = runStateT (runErrorT (runReaderT eval env)) state
+runEval :: Environment -> Store -> Eval a -> IO (a, Store)
+runEval env store eval = runStateT (runReaderT eval env) store
 
 numExpVal :: Integer -> ExpVal
 numExpVal n = ExpVal {

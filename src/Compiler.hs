@@ -27,8 +27,9 @@ compileProgram program outputFile = do
         Left message -> exitWithError message
         Right optimizedProgram -> do
             hPutStrLn stderr "OK"
-            (result', finalStore) <- Backend.runEval Backend.emptyEnv Backend.emptyStore (Backend.emitProgram optimizedProgram)
-            let printFun = \handle -> sequence_ $ map (hPutStrLn handle) (Backend.compiled finalStore)
+            (_, finalStore) <- Backend.runEval Backend.emptyEnv Backend.emptyStore (Backend.emitProgram optimizedProgram)
+            let programText = Backend.compiled finalStore
+            let printFun = \handle -> sequence_ $ map (hPutStrLn handle) programText
             withFile outputFile WriteMode printFun
             let bcFile = replaceExtension outputFile ".bc"
             _ <- system $ printf "llvm-as -o %s %s" bcFile outputFile
