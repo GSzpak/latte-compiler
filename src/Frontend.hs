@@ -85,6 +85,12 @@ duplicatedFunErr ident = printf "Duplicated function declaration: %s" (name iden
 returnInVoidErr :: Expr -> String
 returnInVoidErr expr = printf "Returning expression: %s in a void function" (printTree expr)
 
+voidArgErr :: Ident -> String
+voidArgErr fun = printf "Argument of type void in function: %s" (name fun)
+
+intRetTypeErr :: Type -> String
+intRetTypeErr t = printf "Invalid return type of \"main\" function: expected %s, got %s" (printTree Int) (printTree t)
+
 getIdentType :: Typable a => Ident -> (Env -> TypeEnv a) -> String -> Eval Type
 getIdentType ident envSelector errMessage = do
     env <- ask
@@ -178,17 +184,21 @@ checkStmt (BStmt block) =
             actBlockDepth = (actBlockDepth env) + 1,
             actReturnType = actReturnType env
         }
-checkStmt (Decl type_ items) = checkDeclaration items
+checkStmt (Decl t items) = 
+    if t == Void then
+        throwError $ printf "Invalid variable type: %s" (printTree Void)
+    else
+        checkDeclaration items
     where
         checkDeclaration :: [Item] -> Eval Env
         checkDeclaration [] = ask
         checkDeclaration ((NoInit ident):items) = do
             checkIfVarDeclared ident
-            local (declareVar ident type_) (checkDeclaration items)
+            local (declareVar ident t) (checkDeclaration items)
         checkDeclaration ((Init ident expr):items) = do
             checkIfVarDeclared ident
-            checkExprType expr type_
-            local (declareVar ident type_) (checkDeclaration items)
+            checkExprType expr t
+            local (declareVar ident t) (checkDeclaration items)
 checkStmt s@(Ass ident expr) = do 
     identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
     exprType <- evalExprType expr
@@ -445,11 +455,14 @@ checkIfFunDeclared ident = do
 declareFunctions :: [TopDef] -> Eval Env
 declareFunctions [] = ask
 declareFunctions (fun@(FnDef type_ ident args _):defs) = do
-    env <- ask
-    checkIfFunDeclared ident
-    local declareFun (declareFunctions defs)
+    let argTypes = map getType args
+    if any (== Void) argTypes then
+        throwError $ voidArgErr ident
+    else do
+        env <- ask
+        checkIfFunDeclared ident
+        local declareFun (declareFunctions defs)
     where
-        argTypes = map getType args
         declareFun :: Env -> Env
         declareFun env = Env {
             varEnv = varEnv env,
@@ -482,7 +495,9 @@ checkMain :: Eval ()
 checkMain = do
     env <- ask
     case Map.lookup (Ident "main") (funEnv env) of
-        Just _ -> return ()
+        Just (Fun Int []) -> return ()
+        Just (Fun Int _) ->  throwError "\"main\" function should not take any arguments"
+        Just (Fun t _) ->  throwError $ intRetTypeErr t
         Nothing -> throwError "\"main\" function not declared"
 
 checkProgram :: Program -> Eval Program
