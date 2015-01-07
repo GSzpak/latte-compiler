@@ -542,30 +542,34 @@ emitStmt (CondElse expr stmt1 stmt2) = do
     actBlockNum <- getActBlockNum
     trueBlockNum <- addNewLLVMBlock
     emitStmt stmt1
+    actTrue <- getActBlock
     falseBlockNum <- addNewLLVMBlock
     emitStmt stmt2
+    actFalse <- getActBlock
     emitCondExpr expr actBlockNum trueBlockNum falseBlockNum
-    newBlock <- jumpToNewBlock trueBlockNum
-    case newBlock of
-        Nothing -> ask
-        Just afterNum -> do
-            setLastInstructionInBlock (Jump afterNum) falseBlockNum
-            ask
+    jumpToNewIfNecessary actTrue actFalse
+    ask
     where
-        jumpToNewBlock :: BlockNum -> Eval (Maybe BlockNum)
-        jumpToNewBlock blockNum = do
-            block <- getBlock blockNum
-            case lastInstr block of
-                Just _ -> return Nothing
-                Nothing -> do
-                    newBlock <- addNewLLVMBlock
-                    setLastInstructionInBlock (Jump newBlock) blockNum
-                    return $ Just newBlock
+        jumpToNew :: LLVMBlock -> Eval ()
+        jumpToNew block = do
+            next <- addNewLLVMBlock
+            setLastInstructionInBlock (Jump next) (labelNum block)
+        jumpToNewIfNecessary :: LLVMBlock -> LLVMBlock -> Eval ()
+        jumpToNewIfNecessary blockTrue blockFalse =
+            case (lastInstr blockTrue, lastInstr blockFalse) of
+                (Nothing, Nothing) -> do
+                    after <- addNewLLVMBlock
+                    setLastInstructionInBlock (Jump after) (labelNum blockTrue)
+                    setLastInstructionInBlock (Jump after) (labelNum blockFalse)
+                (Just _, Nothing) -> jumpToNew blockFalse
+                (Nothing, Just _) -> jumpToNew blockTrue
+                (Just _, Just _) -> return ()
+
 emitStmt (While expr stmt) = do
     actBlockNum <- getActBlockNum
-    loopBodyNum <- addNewLLVMBlock
+    addNewLLVMBlock
     emitStmt stmt
-    -- TODO: while(true) { return 1;}
+    loopBodyNum <- getActBlockNum
     loopCondNum <- addNewLLVMBlock
     setLastInstructionInBlock (Jump loopCondNum) actBlockNum
     setLastInstructionInBlock (Jump loopCondNum) loopBodyNum
@@ -645,16 +649,6 @@ compileBlocksInstructions = do
         formatLabel :: BlockNum -> String
         formatLabel labelNum = printf "   %s:" (label labelNum)
 
--- TODO: to delete
-debug :: Show a => a -> Eval ()
-debug a = liftIO $ putStrLn (show a)
-
-debugStore :: Eval ()
-debugStore = do
-    s <- get
-    debug s
-    debug ""
-
 addArgs :: [Arg] -> Eval Environment
 addArgs [] = ask
 addArgs ((Arg type_ ident):args) = do
@@ -719,6 +713,9 @@ addStringsDefinitions = do
         llvmFormat :: Char -> String
         llvmFormat '\t' = "\\09"
         llvmFormat '\n' = "\\0A"
+        llvmFormat '\\' = "\\5C"
+        llvmFormat '\"' = "\\22"
+        llvmFormat '\'' = "\\27"
         llvmFormat c = [c]
 
 declareFunctions :: [TopDef] -> Eval Environment
