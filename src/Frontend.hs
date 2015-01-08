@@ -346,10 +346,23 @@ foldConstExpr (ERel e1 GE e2) = foldRelExpr e1 e2 ((flip ERel) GE) (>=)
 foldConstExpr (ERel e1 EQU e2) = foldRelExpr e1 e2 ((flip ERel) EQU) (==)
 foldConstExpr (ERel e1 NE e2) = foldRelExpr e1 e2 ((flip ERel) NE) (/=)
 
+-- TODO: remove
+debug :: Show a => a -> IO ()
+debug x = liftIO $ putStrLn $ show x
+
 foldConstants :: Stmt -> Eval Stmt
 foldConstants (BStmt block) = do
-    folded <- foldConstantsInBlock block
-    return $ BStmt folded
+    foldedBlock <- foldConstantsInBlock block
+    return $ BStmt foldedBlock
+foldConstants (Decl t items) = do
+    foldedItems <- mapM foldItem items
+    return (Decl t foldedItems)
+    where
+        foldItem :: Item -> Eval Item
+        foldItem (NoInit ident) = return $ NoInit ident
+        foldItem (Init ident expr) = do
+            foldedExpr <- foldConstExpr expr
+            return $ Init ident foldedExpr
 foldConstants (Ass ident expr) = do 
     folded <- foldConstExpr expr
     return $ Ass ident folded
@@ -357,18 +370,22 @@ foldConstants (Ret expr) = do
     folded <- foldConstExpr expr
     return $ Ret folded
 foldConstants (Cond expr stmt) = do
-    folded <- foldConstExpr expr
-    return $ Cond folded stmt
+    foldedStmt <- foldConstants stmt
+    foldedExpr <- foldConstExpr expr
+    return $ Cond foldedExpr foldedStmt
 foldConstants (CondElse expr stmt1 stmt2) = do
-    folded <- foldConstExpr expr
-    return $ CondElse folded stmt1 stmt2
+    foldedStmt1 <- foldConstants stmt1
+    foldedStmt2 <- foldConstants stmt2
+    foldedExpr <- foldConstExpr expr
+    return $ CondElse foldedExpr foldedStmt1 foldedStmt2
 foldConstants (While expr stmt) = do
-    folded <- foldConstExpr expr
-    return $ While folded stmt
+    foldedStmt <- foldConstants stmt
+    foldedExpr <- foldConstExpr expr
+    return $ While foldedExpr foldedStmt
 foldConstants (SExp expr) = do
     folded <- foldConstExpr expr
     return $ SExp folded
-foldConstants stmt = return stmt
+foldConstants stmt = return stmt 
 
 foldConstantsInBlock :: Block -> Eval Block
 foldConstantsInBlock (Block stmts) = do
