@@ -660,7 +660,7 @@ addArgs ((Arg type_ ident):args) = do
         }
 
 emitTopDef :: TopDef -> Eval ()
-emitTopDef (FnDef t ident args block) = do
+emitTopDef (FnTopDef (FnDef t ident args block)) = do
     let funHeader = printf "define %s %s(%s) {" (showLLVMType t) (globalName ident) (showLLVMArgs args)
     addCompiled [funHeader]
     addNewLLVMBlock
@@ -719,7 +719,7 @@ addStringsDefinitions = do
 
 declareFunctions :: [TopDef] -> Eval Environment
 declareFunctions [] = ask
-declareFunctions ((FnDef t ident _ _):defs) = do
+declareFunctions ((FnTopDef (FnDef t ident _ _)):defs) = do
     local addFun (declareFunctions defs)
     where
         addFun :: Environment -> Environment

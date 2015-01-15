@@ -3,19 +3,43 @@ module Frontend where
 
 import AbsLatte
 import PrintLatte
-import Data.List as List
+import qualified Data.List as List
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Control.Monad.Error
 import Control.Monad.Reader
 import Text.Printf
 
 
+type BlockDepth = Integer
+
+type EnvElem = Type
+type TypeEnv a = Map.Map Ident a
+
+data VarEnvElem = VarEnvElem {type_ :: Type, blockDepth :: BlockDepth}
+data ClassEnvElem = ClassEnvElem {
+    ancestors :: Set.Set Ident,
+    fields :: TypeEnv EnvElem,
+    methods :: TypeEnv EnvElem
+}
+
+type VarEnv = TypeEnv VarEnvElem
+type FunEnv = TypeEnv EnvElem
+type ClassEnv = TypeEnv ClassEnvElem
+
+data Env = Env {
+    varEnv :: VarEnv,
+    funEnv :: FunEnv,
+    classEnv :: ClassEnv,
+    actBlockDepth :: BlockDepth,
+    actReturnType :: Type
+}
+
+type Eval a = ReaderT Env (ErrorT String IO) a
+
+
 class Typable a where
     getType :: a -> Type
-
-type BlockDepth = Integer
-data VarEnvElem = VarEnvElem {type_ :: Type, blockDepth :: BlockDepth}
-type FunEnvElem = Type
 
 instance Typable Type where
     getType t = t
@@ -26,21 +50,6 @@ instance Typable VarEnvElem where
 instance Typable Arg where
     getType (Arg type_ _) = type_
 
-instance Typable TopDef where
-    getType (FnDef type_ _ args _) = Fun type_ (map getType args)
-
-type TypeEnv a = Map.Map Ident a
-type VarEnv = TypeEnv VarEnvElem
-type FunEnv = TypeEnv FunEnvElem
-data Env = Env {
-    varEnv :: VarEnv,
-    funEnv :: FunEnv,
-    actBlockDepth :: BlockDepth,
-    actReturnType :: Type
-}
-
-type Eval a = ReaderT Env (ErrorT String IO) a
-
 
 runEval :: Env -> Eval a -> IO (Either String a)
 runEval env eval = runErrorT (runReaderT eval env)
@@ -49,12 +58,22 @@ emptyEnv :: Env
 emptyEnv = Env {
     varEnv = Map.empty,
     funEnv = Map.empty,
+    classEnv = Map.empty,
     actBlockDepth = 0,
     actReturnType = Void
 }
 
 name :: Ident -> String
 name (Ident s) = s
+
+isType :: Type -> Type -> Eval Bool
+isType (Cls ident1) (Cls ident2) = do
+    env <- ask
+    let Just cls = Map.lookup ident1 (classEnv env)
+    return $ Set.member ident2 (ancestors cls)
+isType t1 t2 = return $ t1 == t2
+
+---------------- errors ---------------------------------------------
 
 incomaptibleTypesErr :: Type -> Type -> String
 incomaptibleTypesErr expected actual =
@@ -70,26 +89,19 @@ incompatibleParametersErr ident formal act =
         printFormal = show $ map printTree formal
         printAct = show $ map printTree act
 
-undeclaredFunctionErr :: Ident -> String
-undeclaredFunctionErr ident = printf "Undeclared function: %s" (name ident)
+undeclaredErr :: String -> Ident -> String
+undeclaredErr s ident = printf "Undeclared %s: %s" s (name ident)
 
-undeclaredVariableErr :: Ident -> String
-undeclaredVariableErr ident = printf "Undeclared variable: %s" (name ident)
-
-duplicatedVariableErr :: Ident -> String
-duplicatedVariableErr ident = printf "Duplicated variable declaration: %s" (name ident)
-
-duplicatedFunErr :: Ident -> String
-duplicatedFunErr ident = printf "Duplicated function declaration: %s" (name ident)
+duplicatedErr :: String -> Ident -> String
+duplicatedErr s ident = printf "Duplicated %s declaration: %s" s (name ident)
 
 returnInVoidErr :: Expr -> String
 returnInVoidErr expr = printf "Returning expression: %s in a void function" (printTree expr)
 
-voidArgErr :: Ident -> String
-voidArgErr fun = printf "Argument of type void in function: %s" (name fun)
-
 intRetTypeErr :: Type -> String
 intRetTypeErr t = printf "Invalid return type of \"main\" function: expected %s, got %s" (printTree Int) (printTree t)
+
+--------------------- expr types --------------------------------------------
 
 getIdentType :: Typable a => Ident -> (Env -> TypeEnv a) -> String -> Eval Type
 getIdentType ident envSelector errMessage = do
@@ -100,10 +112,11 @@ getIdentType ident envSelector errMessage = do
 
 checkTypes :: Type -> Type -> Eval Type
 checkTypes actType expectedType = do
-    if actType /= expectedType then
-        throwError $ incomaptibleTypesErr expectedType actType
-    else
+    typesEqual <- isType actType expectedType
+    if typesEqual then
         return actType
+    else
+        throwError $ incomaptibleTypesErr expectedType actType
 
 checkExprType :: Expr -> Type -> Eval Type
 checkExprType expr expectedType = do
@@ -125,7 +138,7 @@ checkTwoArgExpression expr1 expr2 expectedTypes retType = do
         throwError $ unexpectedTypeErr resultType
 
 evalExprType :: Expr -> Eval Type
-evalExprType (EVar ident) = getIdentType ident varEnv (undeclaredVariableErr ident)
+evalExprType (EVar ident) = getIdentType ident varEnv (undeclaredErr "variable" ident)
 evalExprType (ELitInt _) = return Int
 evalExprType ELitTrue = return Bool
 evalExprType ELitFalse = return Bool
@@ -139,9 +152,11 @@ evalExprType e@(ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bo
 evalExprType e@(EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
 evalExprType e@(EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
 evalExprType e@(EApp ident arguments) = do
-    Fun type_ argTypes <- getIdentType ident funEnv (undeclaredFunctionErr ident)
+    Fun type_ argTypes <- getIdentType ident funEnv (undeclaredErr "function" ident)
     actTypes <- mapM evalExprType arguments
-    if argTypes == actTypes then
+    let funTypes = zip actTypes argTypes
+    typesEqual <- mapM (uncurry isType) funTypes
+    if all (== True) typesEqual then
         return type_
     else
         throwError $ incompatibleParametersErr ident argTypes actTypes 
@@ -152,7 +167,7 @@ checkIfVarDeclared ident = do
     case Map.lookup ident (varEnv env) of
         Just (VarEnvElem t depth) ->
             (if (actBlockDepth env) <= depth then
-                throwError $ duplicatedVariableErr ident
+                throwError $ duplicatedErr "variable" ident
             else
                 return ())
         Nothing -> return ()
@@ -168,6 +183,7 @@ declareVar ident t env =
         Env {
             varEnv = Map.insert ident newVar (varEnv env),
             funEnv = funEnv env,
+            classEnv = classEnv env,
             actBlockDepth = actBlockDepth env,
             actReturnType = actReturnType env
         }
@@ -181,6 +197,7 @@ checkStmt (BStmt block) =
         updateBlockDepth env = Env {
             varEnv = varEnv env,
             funEnv = funEnv env,
+            classEnv = classEnv env,
             actBlockDepth = (actBlockDepth env) + 1,
             actReturnType = actReturnType env
         }
@@ -200,16 +217,16 @@ checkStmt (Decl t items) =
             checkExprType expr t
             local (declareVar ident t) (checkDeclaration items)
 checkStmt s@(Ass ident expr) = do 
-    identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
+    identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
     exprType <- evalExprType expr
     checkTypes exprType identType
     ask
 checkStmt s@(Incr ident) = do
-    identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
+    identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
     checkTypes identType Int
     ask
 checkStmt s@(Decr ident) = do
-    identType <- getIdentType ident varEnv (undeclaredVariableErr ident)
+    identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
     checkTypes identType Int
     ask
 checkStmt (Ret expr) = do
@@ -427,8 +444,19 @@ hasReturn (CondElse _ stmt1 stmt2) = (hasReturn stmt1) && (hasReturn stmt2)
 hasReturn (BStmt (Block stmts)) = any hasReturn stmts
 hasReturn _ = False
 
-checkFun :: TopDef -> Eval TopDef
+
+checkIfVoidArg :: [Arg] -> Eval ()
+checkIfVoidArg args = do
+    let argTypes = map getType args
+    if any (== Void) argTypes then
+        throwError $ "Argument of type void"
+    else
+        return ()
+
+checkFun :: FnDef -> Eval FnDef
 checkFun (FnDef type_ ident args block) = do
+    -- TODO: check if void args
+    checkIfVoidArg args
     env <- declareArgs args
     let env' = prepareBlockCheck env
     local (\_ -> env') (checkBlock block)
@@ -443,6 +471,7 @@ checkFun (FnDef type_ ident args block) = do
         prepareBlockCheck env = Env {
             varEnv = varEnv env,
             funEnv = funEnv env,
+            classEnv = classEnv env,
             actBlockDepth = (actBlockDepth env) + 1,
             actReturnType = type_
         }
@@ -452,36 +481,12 @@ checkFun (FnDef type_ ident args block) = do
             checkIfVarDeclared ident
             local (declareVar ident type_) (declareArgs args)
 
-checkFunction :: TopDef -> Eval TopDef
+checkFunction :: FnDef -> Eval FnDef
 checkFunction fun@(FnDef _ ident _ _) =
     (checkFun fun) 
     `catchError` 
     (\message -> throwError $ printf "%s in function: %s" message (name ident))
 
-checkIfFunDeclared :: Ident -> Eval ()
-checkIfFunDeclared ident = do
-    env <- ask
-    case Map.lookup ident (funEnv env) of
-        Just _ -> throwError $ duplicatedFunErr ident
-        Nothing -> return ()
-
-declareFunctions :: [TopDef] -> Eval Env
-declareFunctions [] = ask
-declareFunctions (fun@(FnDef type_ ident args _):defs) = do
-    let argTypes = map getType args
-    if any (== Void) argTypes then
-        throwError $ voidArgErr ident
-    else do
-        checkIfFunDeclared ident
-        local declareFun (declareFunctions defs)
-    where
-        declareFun :: Env -> Env
-        declareFun env = Env {
-            varEnv = varEnv env,
-            funEnv = Map.insert ident (getType fun) (funEnv env),
-            actBlockDepth = actBlockDepth env,
-            actReturnType = actReturnType env
-        }
 
 declareBuiltIn :: Eval Env
 declareBuiltIn =
@@ -499,9 +504,103 @@ declareBuiltIn =
         addFunList funList env = Env {
             varEnv = varEnv env,
             funEnv = Map.union (funEnv env) (Map.fromList funList),
+            classEnv = classEnv env,
             actBlockDepth = actBlockDepth env,
             actReturnType = actReturnType env
         }
+
+
+declareFields :: [Field] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
+declareFields [] accu = return accu
+declareFields ((Field t ident):fields) accu =
+    case Map.lookup ident accu of
+        Nothing -> declareFields fields (Map.insert ident t accu)
+        Just _ -> throwError $ duplicatedErr "field" ident
+
+declareMethods :: [FnDef] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
+declareMethods [] accu = return accu
+declareMethods ((FnDef t ident _ _):methods) accu =
+    case Map.lookup ident accu of
+        Nothing -> declareMethods methods (Map.insert ident t accu)
+        Just _ -> throwError $ duplicatedErr "method" ident
+
+declareCls :: Ident -> Set.Set Ident -> [Field] -> [FnDef] -> Eval Env
+declareCls ident ancestors fields methods = do
+    clsFields <- declareFields fields Map.empty
+    clsMethods <- declareMethods methods Map.empty
+    local (addCls clsFields clsMethods) ask
+    where
+        addCls :: TypeEnv EnvElem -> TypeEnv EnvElem -> Env -> Env
+        addCls clsFields clsMethods env =
+            let
+                newCls = ClassEnvElem {
+                    ancestors = ancestors,
+                    fields = clsFields,
+                    methods = clsMethods
+                }
+            in Env {
+                varEnv = varEnv env,
+                funEnv = funEnv env,
+                classEnv = Map.insert ident newCls (classEnv env),
+                actBlockDepth = actBlockDepth env,
+                actReturnType = actReturnType env
+            }
+
+declareClass :: Ident -> Set.Set Ident -> [Field] -> [FnDef] -> Eval Env
+declareClass ident ancestors fields methods = 
+    (declareCls ident ancestors fields methods)
+    `catchError` 
+    (\message -> throwError $ printf "%s in class: %s" message (name ident))
+
+checkIfFunDuplicated :: Ident -> Eval ()
+checkIfFunDuplicated ident = do
+    env <- ask
+    case Map.lookup ident (funEnv env) of
+        Just _ -> throwError $ duplicatedErr "function" ident
+        Nothing -> return ()
+
+getCls :: Ident -> Eval (Maybe ClassEnvElem)
+getCls ident = do
+    env <- ask
+    return $ Map.lookup ident (classEnv env)
+
+checkIfClsDuplicated :: Ident -> Eval ()
+checkIfClsDuplicated ident = do
+    cls <- getCls ident
+    case cls of
+        Just _ -> throwError $ duplicatedErr "class" ident
+        Nothing -> return ()
+
+getAncestors :: Ident -> Eval (Set.Set Ident)
+getAncestors ancestor = do
+    maybeAncestorCls <- getCls ancestor
+    case maybeAncestorCls of
+        Just ancestorCls -> return $ Set.insert ancestor (ancestors ancestorCls)
+        Nothing -> throwError $ undeclaredErr "class" ancestor
+
+declareTopDefs :: [TopDef] -> Eval Env
+declareTopDefs [] = ask
+declareTopDefs ((FnTopDef (FnDef t ident _ _)):defs) = do
+    checkIfFunDuplicated ident
+    local declareFun (declareTopDefs defs)
+    where
+        declareFun :: Env -> Env
+        declareFun env = Env {
+            varEnv = varEnv env,
+            funEnv = Map.insert ident t (funEnv env),
+            classEnv = classEnv env,
+            actBlockDepth = actBlockDepth env,
+            actReturnType = actReturnType env
+        }
+declareTopDefs ((ClsDef ident fields methods):defs) = do
+    checkIfClsDuplicated ident
+    env' <- declareClass ident Set.empty fields methods
+    local (\_ -> env') (declareTopDefs defs)
+declareTopDefs ((ClsExtDef ident ancestor fields methods):defs) = do
+    checkIfClsDuplicated ident
+    ancestors <- getAncestors ancestor
+    env' <- declareClass ident ancestors fields methods
+    local (\_ -> env') (declareTopDefs defs)
 
 checkMain :: Eval ()
 checkMain = do
@@ -512,10 +611,16 @@ checkMain = do
         Just (Fun t _) ->  throwError $ intRetTypeErr t
         Nothing -> throwError "\"main\" function not declared"
 
+checkTopDef :: TopDef -> Eval TopDef
+-- TODO:
+checkTopDef (FnTopDef fnDef) = do
+    checkedFun <- checkFunction fnDef
+    return $ FnTopDef checkedFun
+
 checkProgram :: Program -> Eval Program
 checkProgram (Program topDefinitions) = do
     env <- declareBuiltIn
-    env' <- local (\_ -> env) (declareFunctions topDefinitions)
+    env' <- local (\_ -> env) (declareTopDefs topDefinitions)
     local (\_ -> env') checkMain
-    optimizedTopDefs <- local (\_ -> env') (mapM checkFunction topDefinitions)
+    optimizedTopDefs <- local (\_ -> env') (mapM checkTopDef topDefinitions)
     return $ Program optimizedTopDefs
