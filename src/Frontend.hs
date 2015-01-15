@@ -265,10 +265,6 @@ exprFromBool :: Bool -> Expr
 exprFromBool True = ELitTrue
 exprFromBool False = ELitFalse
 
-boolFromExpr :: Expr -> Bool
-boolFromExpr ELitTrue = True
-boolFromExpr ELitFalse = False
-
 foldBinOpExpr :: Expr -> Expr -> (Expr -> Expr -> Expr) -> (Integer -> Integer -> Integer) -> Bool -> Eval Expr
 foldBinOpExpr e1 e2 constructor fun checkDivision = do
     folded1 <- foldConstExpr e1
@@ -476,7 +472,6 @@ declareFunctions (fun@(FnDef type_ ident args _):defs) = do
     if any (== Void) argTypes then
         throwError $ voidArgErr ident
     else do
-        env <- ask
         checkIfFunDeclared ident
         local declareFun (declareFunctions defs)
     where
