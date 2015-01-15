@@ -90,10 +90,20 @@ instance Print Program where
 
 instance Print TopDef where
   prt i e = case e of
-   FnDef type' id args block -> prPrec i 0 (concatD [prt 0 type' , prt 0 id , doc (showString "(") , prt 0 args , doc (showString ")") , prt 0 block])
+   FnTopDef fndef -> prPrec i 0 (concatD [prt 0 fndef])
+   ClsDef id fields fndefs -> prPrec i 0 (concatD [doc (showString "class") , prt 0 id , doc (showString "{") , prt 0 fields , prt 0 fndefs , doc (showString "}")])
+   ClsExtDef id0 id fields fndefs -> prPrec i 0 (concatD [doc (showString "class") , prt 0 id0 , doc (showString "extends") , prt 0 id , doc (showString "{") , prt 0 fields , prt 0 fndefs , doc (showString "}")])
 
   prtList es = case es of
    [x] -> (concatD [prt 0 x])
+   x:xs -> (concatD [prt 0 x , prt 0 xs])
+
+instance Print FnDef where
+  prt i e = case e of
+   FnDef type' id args block -> prPrec i 0 (concatD [prt 0 type' , prt 0 id , doc (showString "(") , prt 0 args , doc (showString ")") , prt 0 block])
+
+  prtList es = case es of
+   [] -> (concatD [])
    x:xs -> (concatD [prt 0 x , prt 0 xs])
 
 instance Print Arg where
@@ -104,6 +114,17 @@ instance Print Arg where
    [] -> (concatD [])
    [x] -> (concatD [prt 0 x])
    x:xs -> (concatD [prt 0 x , doc (showString ",") , prt 0 xs])
+
+instance Print Field where
+  prt i e = case e of
+   Field type' id -> prPrec i 0 (concatD [prt 0 type' , prt 0 id])
+
+  prtList es = case es of
+   [] -> (concatD [])
+   [] -> (concatD [])
+   [x] -> (concatD [prt 0 x])
+   x:xs -> (concatD [prt 0 x , doc (showString ";") , prt 0 xs])
+   x:xs -> (concatD [prt 0 x , doc (showString ";") , prt 0 xs])
 
 instance Print Block where
   prt i e = case e of
@@ -145,6 +166,7 @@ instance Print Type where
    Bool  -> prPrec i 0 (concatD [doc (showString "boolean")])
    Void  -> prPrec i 0 (concatD [doc (showString "void")])
    Fun type' types -> prPrec i 0 (concatD [prt 0 type' , doc (showString "(") , prt 0 types , doc (showString ")")])
+   Cls id -> prPrec i 0 (concatD [doc (showString "class") , prt 0 id])
 
   prtList es = case es of
    [] -> (concatD [])
@@ -153,12 +175,16 @@ instance Print Type where
 
 instance Print Expr where
   prt i e = case e of
-   EVar id -> prPrec i 6 (concatD [prt 0 id])
    ELitInt n -> prPrec i 6 (concatD [prt 0 n])
    ELitTrue  -> prPrec i 6 (concatD [doc (showString "true")])
    ELitFalse  -> prPrec i 6 (concatD [doc (showString "false")])
    EApp id exprs -> prPrec i 6 (concatD [prt 0 id , doc (showString "(") , prt 0 exprs , doc (showString ")")])
    EString str -> prPrec i 6 (concatD [prt 0 str])
+   ENew id -> prPrec i 6 (concatD [doc (showString "new") , prt 0 id])
+   ENull type' -> prPrec i 6 (concatD [doc (showString "(") , prt 0 type' , doc (showString ")") , doc (showString "null")])
+   EField id0 id -> prPrec i 6 (concatD [prt 0 id0 , doc (showString ".") , prt 0 id])
+   EMApp id0 id exprs -> prPrec i 6 (concatD [prt 0 id0 , doc (showString ".") , prt 0 id , doc (showString "(") , prt 0 exprs , doc (showString ")")])
+   EVar id -> prPrec i 6 (concatD [prt 0 id])
    Neg expr -> prPrec i 5 (concatD [doc (showString "-") , prt 6 expr])
    Not expr -> prPrec i 5 (concatD [doc (showString "!") , prt 6 expr])
    EMul expr0 mulop expr -> prPrec i 4 (concatD [prt 4 expr0 , prt 0 mulop , prt 5 expr])

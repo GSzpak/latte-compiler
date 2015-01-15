@@ -21,12 +21,24 @@ transProgram x = case x of
 
 transTopDef :: TopDef -> Result
 transTopDef x = case x of
+  FnTopDef fndef  -> failure x
+  ClsDef id fields fndefs  -> failure x
+  ClsExtDef id1 id2 fields3 fndefs4  -> failure x
+
+
+transFnDef :: FnDef -> Result
+transFnDef x = case x of
   FnDef type' id args block  -> failure x
 
 
 transArg :: Arg -> Result
 transArg x = case x of
   Arg type' id  -> failure x
+
+
+transField :: Field -> Result
+transField x = case x of
+  Field type' id  -> failure x
 
 
 transBlock :: Block -> Result
@@ -63,16 +75,21 @@ transType x = case x of
   Bool  -> failure x
   Void  -> failure x
   Fun type' types  -> failure x
+  Cls id  -> failure x
 
 
 transExpr :: Expr -> Result
 transExpr x = case x of
-  EVar id  -> failure x
   ELitInt n  -> failure x
   ELitTrue  -> failure x
   ELitFalse  -> failure x
   EApp id exprs  -> failure x
   EString str  -> failure x
+  ENew id  -> failure x
+  ENull type'  -> failure x
+  EField id1 id2  -> failure x
+  EMApp id1 id2 exprs3  -> failure x
+  EVar id  -> failure x
   Neg expr  -> failure x
   Not expr  -> failure x
   EMul expr1 mulop2 expr3  -> failure x

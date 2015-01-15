@@ -4,13 +4,29 @@ entrypoints Program ;
 
 Program.   Program ::= [TopDef] ;
 
-FnDef.	   TopDef ::= Type Ident "(" [Arg] ")" Block ;
+FnTopDef.  TopDef ::= FnDef ;
 
-separator nonempty TopDef "" ;
+ClsDef.    TopDef ::= "class" Ident "{" [Field] [FnDef] "}" ;
 
-Arg. 	   Arg ::= Type Ident;
+ClsExtDef. TopDef ::= "class" Ident "extends" Ident "{" [Field] [FnDef] "}" ;
+
+separator  nonempty TopDef "" ;
+
+-- class members -------------------------------------------
+
+FnDef.     FnDef ::= Type Ident "(" [Arg] ")" Block ;
+
+separator  FnDef "" ;
+
+Arg. 	   Arg ::= Type Ident ;
 
 separator  Arg "," ;
+
+Field.     Field ::= Type Ident ;
+
+separator  Field ";" ;
+
+terminator Field ";" ;
 
 -- statements ----------------------------------------------
 
@@ -60,11 +76,11 @@ Void.      Type ::= "void" ;
 
 internal   Fun. Type ::= Type "(" [Type] ")" ;
 
+internal   Cls. Type ::= "class" Ident;
+
 separator  Type "," ;
 
 -- Expressions ---------------------------------------------
-
-EVar.      Expr6 ::= Ident ;
 
 ELitInt.   Expr6 ::= Integer ;
 
@@ -75,6 +91,16 @@ ELitFalse. Expr6 ::= "false" ;
 EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
 
 EString.   Expr6 ::= String ;
+
+ENew.      Expr6 ::= "new" Ident ;
+
+ENull.     Expr6 ::= "(" Type ")" "null" ;
+
+EField.    Expr6 ::= Ident "." Ident ;
+
+EMApp.     Expr6 ::= Ident "." Ident "(" [Expr] ")" ;
+
+EVar.      Expr6 ::= Ident ;
 
 Neg.       Expr5 ::= "-" Expr6 ;
 

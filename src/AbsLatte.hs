@@ -9,11 +9,21 @@ data Program =
   deriving (Eq,Ord,Show)
 
 data TopDef =
+   FnTopDef FnDef
+ | ClsDef Ident [Field] [FnDef]
+ | ClsExtDef Ident Ident [Field] [FnDef]
+  deriving (Eq,Ord,Show)
+
+data FnDef =
    FnDef Type Ident [Arg] Block
   deriving (Eq,Ord,Show)
 
 data Arg =
    Arg Type Ident
+  deriving (Eq,Ord,Show)
+
+data Field =
+   Field Type Ident
   deriving (Eq,Ord,Show)
 
 data Block =
@@ -46,15 +56,20 @@ data Type =
  | Bool
  | Void
  | Fun Type [Type]
+ | Cls Ident
   deriving (Eq,Ord,Show)
 
 data Expr =
-   EVar Ident
- | ELitInt Integer
+   ELitInt Integer
  | ELitTrue
  | ELitFalse
  | EApp Ident [Expr]
  | EString String
+ | ENew Ident
+ | ENull Type
+ | EField Ident Ident
+ | EMApp Ident Ident [Expr]
+ | EVar Ident
  | Neg Expr
  | Not Expr
  | EMul Expr MulOp Expr
