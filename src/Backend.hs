@@ -20,28 +20,39 @@ data ExpValRepr =
     NumVal Integer |
     BoolVal Bool
 
-instance Show ExpValRepr where
-    show (RegVal name) = name
-    show (NumVal n) = show n
-    show (BoolVal True) = "true"
-    show (BoolVal False) = "false"
-
 data ExpVal = ExpVal {
     repr :: ExpValRepr,
     type_ :: Type
 }
 
-instance Show ExpVal where
-    show val = printf "%s %s" (showLLVMType $ type_ val) (show $ repr val)
+data LLVMBlock = LLVMBlock {
+    labelNum :: BlockNum,
+    instructions :: [Instruction],
+    lastInstr :: Maybe Instruction
+} deriving Show
+
+data EnvElem = EnvElem Name Type deriving Show
+
+type Env = Map.Map Ident EnvElem
+
+data Environment = Environment {
+    varEnv :: Env,
+    funEnv :: Env
+} deriving Show
+
+data Store = Store {
+    blocks :: Map.Map BlockNum LLVMBlock,
+    actBlockNum :: BlockNum,
+    regCounter :: Counter,
+    constCounter :: Counter,
+    labelCounter :: Counter,
+    strConstants :: Map.Map String Name,
+    compiled :: [String]
+} deriving Show
+
+type Eval a = ReaderT Environment (StateT Store IO) a
 
 data BinOp = Add | Sub | Mul | DivOp | ModOp
-
-instance Show BinOp where
-    show Add = "add"
-    show Sub = "sub"
-    show Mul = "mul"
-    show DivOp = "sdiv"
-    show ModOp = "srem"
 
 data Instruction =
     BinOpExpr Registry BinOp ExpVal ExpVal |
@@ -58,6 +69,8 @@ data Instruction =
     Phi Registry Type [(ExpVal, BlockNum)] |
     GetElementPtr Registry Integer Name |
     FunDecl Name Type [Type]
+
+--- printing utils -------------------------------------
 
 identReg :: Ident -> Registry
 identReg (Ident name) = '%':name
@@ -111,6 +124,22 @@ showPhiExprs exprsWithLabels = printWithSeparator (map show' exprsWithLabels) ",
         show' :: (ExpVal, BlockNum) -> String
         show' (val, num) = printf "[ %s, %s ]" (show $ repr val) ('%':(label num))
 
+instance Show ExpValRepr where
+    show (RegVal name) = name
+    show (NumVal n) = show n
+    show (BoolVal True) = "true"
+    show (BoolVal False) = "false"
+
+instance Show ExpVal where
+    show val = printf "%s %s" (showLLVMType $ type_ val) (show $ repr val)
+
+instance Show BinOp where
+    show Add = "add"
+    show Sub = "sub"
+    show Mul = "mul"
+    show DivOp = "sdiv"
+    show ModOp = "srem"
+
 instance Show Instruction where
     show (BinOpExpr result binop val1 val2) =
         let
@@ -155,32 +184,7 @@ instance Show Instruction where
         in 
             printf "declare %s @%s(%s)" (showLLVMType retType) name showArgTypes
 
-data LLVMBlock = LLVMBlock {
-    labelNum :: BlockNum,
-    instructions :: [Instruction],
-    lastInstr :: Maybe Instruction
-} deriving Show
-
-data EnvElem = EnvElem Name Type deriving Show
-
-type Env = Map.Map Ident EnvElem
-
-data Environment = Environment {
-    varEnv :: Env,
-    funEnv :: Env
-} deriving Show
-
-data Store = Store {
-    blocks :: Map.Map BlockNum LLVMBlock,
-    actBlockNum :: BlockNum,
-    regCounter :: Counter,
-    constCounter :: Counter,
-    labelCounter :: Counter,
-    strConstants :: Map.Map String Name,
-    compiled :: [String]
-} deriving Show
-
-type Eval a = ReaderT Environment (StateT Store IO) a
+--------------------------------------------------------------------------
 
 emptyEnv :: Environment
 emptyEnv = Environment {
@@ -330,6 +334,8 @@ addNewLLVMBlock = do
     }
     return next
 
+-------------- expressions ------------------------------------
+
 emitBinOpInstr :: Expr -> Expr -> BinOp -> Registry -> Eval Type
 emitBinOpInstr e1 e2 operator resultReg = do
     val1 <- emitExpr e1
@@ -452,6 +458,8 @@ emitExpr expr = do
     result <- getNextRegistry
     t <- emitExprInstruction expr result
     return $ ExpVal {repr = RegVal result, type_ = t}
+
+----------- statements ------------------------------------------------
 
 declare :: Ident -> ExpVal -> Eval Environment
 declare ident val = do
