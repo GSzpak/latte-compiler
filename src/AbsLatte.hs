@@ -66,8 +66,7 @@ data Expr =
  | EApp Ident [Expr]
  | EString String
  | ENew Ident
- | ENull Type
- | EField Ident Ident
+ | ENull Ident
  | EMApp Ident Ident [Expr]
  | EVar Ident
  | Neg Expr

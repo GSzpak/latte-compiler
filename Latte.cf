@@ -24,8 +24,6 @@ separator  Arg "," ;
 
 Field.     Field ::= Type Ident ;
 
-separator  Field ";" ;
-
 terminator Field ";" ;
 
 -- statements ----------------------------------------------
@@ -94,9 +92,7 @@ EString.   Expr6 ::= String ;
 
 ENew.      Expr6 ::= "new" Ident ;
 
-ENull.     Expr6 ::= "(" Type ")" "null" ;
-
-EField.    Expr6 ::= Ident "." Ident ;
+ENull.     Expr6 ::= "(" Ident ")" "null" ;
 
 EMApp.     Expr6 ::= Ident "." Ident "(" [Expr] ")" ;
 

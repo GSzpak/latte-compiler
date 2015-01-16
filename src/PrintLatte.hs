@@ -121,7 +121,6 @@ instance Print Field where
 
   prtList es = case es of
    [] -> (concatD [])
-   [x] -> (concatD [prt 0 x])
    x:xs -> (concatD [prt 0 x , doc (showString ";") , prt 0 xs])
 
 instance Print Block where
@@ -179,8 +178,7 @@ instance Print Expr where
    EApp id exprs -> prPrec i 6 (concatD [prt 0 id , doc (showString "(") , prt 0 exprs , doc (showString ")")])
    EString str -> prPrec i 6 (concatD [prt 0 str])
    ENew id -> prPrec i 6 (concatD [doc (showString "new") , prt 0 id])
-   ENull type' -> prPrec i 6 (concatD [doc (showString "(") , prt 0 type' , doc (showString ")") , doc (showString "null")])
-   EField id0 id -> prPrec i 6 (concatD [prt 0 id0 , doc (showString ".") , prt 0 id])
+   ENull id -> prPrec i 6 (concatD [doc (showString "(") , prt 0 id , doc (showString ")") , doc (showString "null")])
    EMApp id0 id exprs -> prPrec i 6 (concatD [prt 0 id0 , doc (showString ".") , prt 0 id , doc (showString "(") , prt 0 exprs , doc (showString ")")])
    EVar id -> prPrec i 6 (concatD [prt 0 id])
    Neg expr -> prPrec i 5 (concatD [doc (showString "-") , prt 6 expr])

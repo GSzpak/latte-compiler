@@ -16,12 +16,16 @@ type BlockDepth = Integer
 type EnvElem = Type
 type TypeEnv a = Map.Map Ident a
 
-data VarEnvElem = VarEnvElem {type_ :: Type, blockDepth :: BlockDepth}
+data VarEnvElem = VarEnvElem {
+    type_ :: Type,
+    blockDepth :: BlockDepth
+} deriving Show
+
 data ClassEnvElem = ClassEnvElem {
     ancestors :: Set.Set Ident,
     fields :: TypeEnv EnvElem,
     methods :: TypeEnv EnvElem
-}
+} deriving Show
 
 type VarEnv = TypeEnv VarEnvElem
 type FunEnv = TypeEnv EnvElem
@@ -33,22 +37,25 @@ data Env = Env {
     classEnv :: ClassEnv,
     actBlockDepth :: BlockDepth,
     actReturnType :: Type
-}
+} deriving Show
 
 type Eval a = ReaderT Env (ErrorT String IO) a
 
 
-class Typable a where
+class Typeable a where
     getType :: a -> Type
 
-instance Typable Type where
+instance Typeable Type where
     getType t = t
 
-instance Typable VarEnvElem where
+instance Typeable VarEnvElem where
     getType varEnvElem = type_ varEnvElem
 
-instance Typable Arg where
+instance Typeable Arg where
     getType (Arg type_ _) = type_
+
+instance Typeable FnDef where
+    getType (FnDef t ident args _) = Fun t (map getType args)
 
 
 runEval :: Env -> Eval a -> IO (Either String a)
@@ -101,9 +108,13 @@ returnInVoidErr expr = printf "Returning expression: %s in a void function" (pri
 intRetTypeErr :: Type -> String
 intRetTypeErr t = printf "Invalid return type of \"main\" function: expected %s, got %s" (printTree Int) (printTree t)
 
+undeclaredMethodErr :: Ident -> Ident -> String
+undeclaredMethodErr clsIdent methodIdent = 
+    printf "Undeclared method %s in class %s" (name clsIdent) (name methodIdent)
+
 --------------------- expr types --------------------------------------------
 
-getIdentType :: Typable a => Ident -> (Env -> TypeEnv a) -> String -> Eval Type
+getIdentType :: Typeable a => Ident -> (Env -> TypeEnv a) -> String -> Eval Type
 getIdentType ident envSelector errMessage = do
     env <- ask
     case Map.lookup ident (envSelector env) of
@@ -137,6 +148,19 @@ checkTwoArgExpression expr1 expr2 expectedTypes retType = do
     else
         throwError $ unexpectedTypeErr resultType
 
+evalFunType :: Ident -> Type -> [Type] -> [Expr] -> Eval Type
+evalFunType ident retType argTypes arguments = do
+    actTypes <- mapM evalExprType arguments
+    if length actTypes /= length argTypes then
+        throwError $ printf "Wrong number of arguments in function call: %s" (name ident)
+    else do
+        let funTypes = zip actTypes argTypes
+        typesEqual <- mapM (uncurry isType) funTypes
+        if all (== True) typesEqual then
+            return retType
+        else
+            throwError $ incompatibleParametersErr ident argTypes actTypes 
+
 evalExprType :: Expr -> Eval Type
 evalExprType (EVar ident) = getIdentType ident varEnv (undeclaredErr "variable" ident)
 evalExprType (ELitInt _) = return Int
@@ -152,14 +176,21 @@ evalExprType e@(ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bo
 evalExprType e@(EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
 evalExprType e@(EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
 evalExprType e@(EApp ident arguments) = do
-    Fun type_ argTypes <- getIdentType ident funEnv (undeclaredErr "function" ident)
-    actTypes <- mapM evalExprType arguments
-    let funTypes = zip actTypes argTypes
-    typesEqual <- mapM (uncurry isType) funTypes
-    if all (== True) typesEqual then
-        return type_
-    else
-        throwError $ incompatibleParametersErr ident argTypes actTypes 
+    Fun t argTypes <- getIdentType ident funEnv (undeclaredErr "function" ident)
+    evalFunType ident t argTypes arguments
+evalExprType (ENew ident) = do
+    checkIfClsDeclared ident
+    return $ Cls ident
+evalExprType (ENull ident) = do
+    checkIfClsDeclared ident
+    return $ Cls ident
+evalExprType (EMApp clsIdent methodIdent arguments) = do
+    maybeCls <- getCls clsIdent
+    case maybeCls of
+        Nothing -> throwError $ undeclaredErr "class" clsIdent
+        Just cls -> case Map.lookup methodIdent (methods cls) of
+            Nothing -> throwError $ undeclaredMethodErr clsIdent methodIdent
+            Just (Fun t argTypes) -> evalFunType methodIdent t argTypes arguments
 
 checkIfVarDeclared :: Ident -> Eval ()
 checkIfVarDeclared ident = do
@@ -201,7 +232,8 @@ checkStmt (BStmt block) =
             actBlockDepth = (actBlockDepth env) + 1,
             actReturnType = actReturnType env
         }
-checkStmt (Decl t items) = 
+checkStmt (Decl t items) = do 
+    checkIfTypeDeclared t
     if t == Void then
         throwError $ printf "Invalid variable type: %s" (printTree Void)
     else
@@ -218,8 +250,7 @@ checkStmt (Decl t items) =
             local (declareVar ident t) (checkDeclaration items)
 checkStmt s@(Ass ident expr) = do 
     identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
-    exprType <- evalExprType expr
-    checkTypes exprType identType
+    checkExprType expr identType
     ask
 checkStmt s@(Incr ident) = do
     identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
@@ -304,11 +335,6 @@ foldRelExpr expr1 expr2 constructor relOper = do
         return $ constructor folded1 folded2
 
 foldConstExpr :: Expr -> Eval Expr
-foldConstExpr (EVar ident) = return $ EVar ident
-foldConstExpr (ELitInt n) = return $ ELitInt n
-foldConstExpr ELitTrue = return ELitTrue
-foldConstExpr ELitFalse = return ELitFalse
-foldConstExpr (EString s) = return $ EString s
 foldConstExpr (Not expr) = do
     folded <- foldConstExpr expr
     case folded of
@@ -320,9 +346,6 @@ foldConstExpr (Neg expr) = do
     case folded of
         ELitInt n -> return $ ELitInt (-n)
         expr -> return (Neg expr)
-foldConstExpr (EApp ident exprs) = do
-    foldedArgs <- mapM foldConstExpr exprs
-    return $ EApp ident foldedArgs
 foldConstExpr (EMul e1 Times e2) = foldBinOpExpr e1 e2 ((flip EMul) Times) (*) False 
 foldConstExpr (EMul e1 Div e2) = foldBinOpExpr e1 e2 ((flip EMul) Div) div True
 foldConstExpr (EMul e1 Mod e2) = foldBinOpExpr e1 e2 ((flip EMul) Mod) mod True
@@ -358,9 +381,16 @@ foldConstExpr (ERel e1 GTH e2) = foldRelExpr e1 e2 ((flip ERel) GTH) (>)
 foldConstExpr (ERel e1 GE e2) = foldRelExpr e1 e2 ((flip ERel) GE) (>=)
 foldConstExpr (ERel e1 EQU e2) = foldRelExpr e1 e2 ((flip ERel) EQU) (==)
 foldConstExpr (ERel e1 NE e2) = foldRelExpr e1 e2 ((flip ERel) NE) (/=)
+foldConstExpr (EApp ident exprs) = do
+    foldedArgs <- mapM foldConstExpr exprs
+    return $ EApp ident foldedArgs
+foldConstExpr (EMApp clsIdent methodIdent exprs) = do
+    foldedArgs <- mapM foldConstExpr exprs
+    return $ EMApp clsIdent methodIdent foldedArgs
+foldConstExpr expr = return expr
 
 -- TODO: remove
-debug :: Show a => a -> IO ()
+debug :: Show a => a -> Eval ()
 debug x = liftIO $ putStrLn $ show x
 
 foldConstants :: Stmt -> Eval Stmt
@@ -444,28 +474,32 @@ hasReturn (CondElse _ stmt1 stmt2) = (hasReturn stmt1) && (hasReturn stmt2)
 hasReturn (BStmt (Block stmts)) = any hasReturn stmts
 hasReturn _ = False
 
+checkIfClsDeclared :: Ident -> Eval ()
+checkIfClsDeclared ident = do
+    maybeCls <- getCls ident
+    case maybeCls of
+        Just _ -> return ()
+        Nothing -> throwError $ undeclaredErr "class" ident
 
-checkIfVoidArg :: [Arg] -> Eval ()
-checkIfVoidArg args = do
-    let argTypes = map getType args
-    if any (== Void) argTypes then
-        throwError $ "Argument of type void"
-    else
-        return ()
+checkIfTypeDeclared ::  Type -> Eval ()
+checkIfTypeDeclared (Cls ident) = checkIfClsDeclared ident
+checkIfTypeDeclared _ = return ()
 
 checkFun :: FnDef -> Eval FnDef
-checkFun (FnDef type_ ident args block) = do
-    -- TODO: check if void args
-    checkIfVoidArg args
+checkFun (FnDef t ident args block) = do
+    env <- ask
+    let Just (Fun t argTypes) = Map.lookup ident (funEnv env)
+    sequence_  $ map checkIfTypeDeclared (t:argTypes)
+    checkIfAnyVoid argTypes
     env <- declareArgs args
     let env' = prepareBlockCheck env
     local (\_ -> env') (checkBlock block)
     foldedConstantsBlock <- foldConstantsInBlock block
     let (Block optimized) = optimizeBlock foldedConstantsBlock
-    if (type_ /= Void) && (not (any hasReturn optimized)) then
+    if (t /= Void) && (not (any hasReturn optimized)) then
         throwError $ "No \"return\" instruction"
     else
-        return $ FnDef type_ ident args (Block optimized)
+        return $ FnDef t ident args (Block optimized)
     where
         prepareBlockCheck :: Env -> Env
         prepareBlockCheck env = Env {
@@ -473,13 +507,19 @@ checkFun (FnDef type_ ident args block) = do
             funEnv = funEnv env,
             classEnv = classEnv env,
             actBlockDepth = (actBlockDepth env) + 1,
-            actReturnType = type_
+            actReturnType = t
         }
         declareArgs :: [Arg] -> Eval Env
         declareArgs [] = ask
         declareArgs ((Arg type_ ident):args) = do
             checkIfVarDeclared ident
             local (declareVar ident type_) (declareArgs args)
+        checkIfAnyVoid :: [Type] -> Eval ()
+        checkIfAnyVoid types = do
+            if any (== Void) types then
+                throwError $ "Argument of type void"
+            else
+                return ()
 
 checkFunction :: FnDef -> Eval FnDef
 checkFunction fun@(FnDef _ ident _ _) =
@@ -487,6 +527,33 @@ checkFunction fun@(FnDef _ ident _ _) =
     `catchError` 
     (\message -> throwError $ printf "%s in function: %s" message (name ident))
 
+addFieldsToEnv :: [Field] -> Eval Env
+addFieldsToEnv [] = ask
+addFeildsToEnv ((Field t ident):fields) =
+    local (declareVar ident t) (addFieldsToEnv fields)
+
+checkCls :: Ident -> [Field] -> [FnDef] -> Eval [FnDef]
+checkCls ident fields methods = do
+    env <- addFieldsToEnv fields
+    optimizedMethods <- local (\_ -> env) (mapM checkFunction methods)
+    return optimizedMethods
+
+checkClass :: Ident -> [Field] -> [FnDef] -> Eval [FnDef]
+checkClass ident fields methods =
+    (checkCls ident fields methods)
+    `catchError` 
+    (\message -> throwError $ printf "%s in class: %s" message (name ident))
+
+checkTopDef :: TopDef -> Eval TopDef
+checkTopDef (FnTopDef fnDef) = do
+    checkedFun <- checkFunction fnDef
+    return $ FnTopDef checkedFun
+checkTopDef (ClsDef ident fields methods) = do
+    checkedMethods <- checkClass ident fields methods
+    return $ ClsDef ident fields checkedMethods
+checkTopDef (ClsExtDef ident ancestor fields methods) = do
+    checkedMethods <- checkClass ident fields methods
+    return $ ClsExtDef ident ancestor fields checkedMethods
 
 declareBuiltIn :: Eval Env
 declareBuiltIn =
@@ -580,14 +647,14 @@ getAncestors ancestor = do
 
 declareTopDefs :: [TopDef] -> Eval Env
 declareTopDefs [] = ask
-declareTopDefs ((FnTopDef (FnDef t ident _ _)):defs) = do
+declareTopDefs ((FnTopDef fun@(FnDef t ident _ _)):defs) = do
     checkIfFunDuplicated ident
     local declareFun (declareTopDefs defs)
     where
         declareFun :: Env -> Env
         declareFun env = Env {
             varEnv = varEnv env,
-            funEnv = Map.insert ident t (funEnv env),
+            funEnv = Map.insert ident (getType fun) (funEnv env),
             classEnv = classEnv env,
             actBlockDepth = actBlockDepth env,
             actReturnType = actReturnType env
@@ -610,12 +677,6 @@ checkMain = do
         Just (Fun Int _) ->  throwError "\"main\" function should not take any arguments"
         Just (Fun t _) ->  throwError $ intRetTypeErr t
         Nothing -> throwError "\"main\" function not declared"
-
-checkTopDef :: TopDef -> Eval TopDef
--- TODO:
-checkTopDef (FnTopDef fnDef) = do
-    checkedFun <- checkFunction fnDef
-    return $ FnTopDef checkedFun
 
 checkProgram :: Program -> Eval Program
 checkProgram (Program topDefinitions) = do
