@@ -37,8 +37,14 @@ type Env = Map.Map Ident EnvElem
 
 data Environment = Environment {
     varEnv :: Env,
-    funEnv :: Env
+    funEnv :: Env,
+    actClass :: Maybe Name
 } deriving Show
+
+data LLVMClass = LLVMClass {
+    fields :: Map.Map Ident Type,
+    vtable
+}
 
 data Store = Store {
     blocks :: Map.Map BlockNum LLVMBlock,
@@ -47,6 +53,7 @@ data Store = Store {
     constCounter :: Counter,
     labelCounter :: Counter,
     strConstants :: Map.Map String Name,
+    classes 
     compiled :: [String]
 } deriving Show
 
@@ -83,6 +90,9 @@ globalName (Ident name) = '@':name
 
 constName :: Counter -> Name
 constName strNum = printf "@.str%s" (show strNum)
+
+classReg :: Ident -> Registry
+classReg (Ident clsName) = "%class." ++ clsName
 
 label :: BlockNum -> Label
 label num = printf "label%s" (show num)
@@ -571,7 +581,6 @@ emitStmt (CondElse expr stmt1 stmt2) = do
                 (Just _, Nothing) -> jumpToNew blockFalse
                 (Nothing, Just _) -> jumpToNew blockTrue
                 (Just _, Just _) -> return ()
-
 emitStmt (While expr stmt) = do
     actBlockNum <- getActBlockNum
     addNewLLVMBlock
@@ -667,6 +676,12 @@ addArgs ((Arg type_ ident):args) = do
             funEnv = funEnv env
         }
 
+-- TODO: move typeable to utils
+getFieldType :: Field -> Type
+getFieldType (Field t ident) = t
+
+addNewCls :: Ident -> Fields -> 
+
 emitTopDef :: TopDef -> Eval ()
 emitTopDef (FnTopDef (FnDef t ident args block)) = do
     let funHeader = printf "define %s %s(%s) {" (showLLVMType t) (globalName ident) (showLLVMArgs args)
@@ -684,6 +699,10 @@ emitTopDef (FnTopDef (FnDef t ident args block)) = do
             let val = ExpVal {repr = RegVal reg, type_ = t}
             env <- declare ident val
             local (\_ -> env) (declareArgs args)
+-- TODO: actCls : Maybe LLVMClass
+emitTopDef (ClsDef ident fields methods) = do
+    clsName <- addNewCls ident fields
+    local setActClass (sequence $ map emitMethod methods)
 
 reverseInstructions :: Eval ()
 reverseInstructions = do
