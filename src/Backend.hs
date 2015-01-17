@@ -18,7 +18,8 @@ type BlockNum = Integer
 data ExpValRepr =
     RegVal Name |
     NumVal Integer |
-    BoolVal Bool
+    BoolVal Bool |
+    NullVal
 
 data ExpVal = ExpVal {
     repr :: ExpValRepr,
@@ -31,6 +32,14 @@ data LLVMBlock = LLVMBlock {
     lastInstr :: Maybe Instruction
 } deriving Show
 
+data LatteClass = LatteClass {
+    clsIdent :: Ident,
+    fieldIdents :: [Ident],
+    fieldTypes :: [Type],
+    ancestor :: Maybe LatteClass,
+    vtable :: [Ident]
+}
+
 data EnvElem = EnvElem Name Type deriving Show
 
 type Env = Map.Map Ident EnvElem
@@ -38,13 +47,9 @@ type Env = Map.Map Ident EnvElem
 data Environment = Environment {
     varEnv :: Env,
     funEnv :: Env,
-    actClass :: Maybe Name
+    actClass :: Maybe LatteClass
 } deriving Show
 
-data LLVMClass = LLVMClass {
-    fields :: Map.Map Ident Type,
-    vtable
-}
 
 data Store = Store {
     blocks :: Map.Map BlockNum LLVMBlock,
@@ -53,7 +58,8 @@ data Store = Store {
     constCounter :: Counter,
     labelCounter :: Counter,
     strConstants :: Map.Map String Name,
-    classes 
+    classes :: Map.Map Ident LatteClass,
+    classesReprs :: [String],
     compiled :: [String]
 } deriving Show
 
@@ -75,7 +81,8 @@ data Instruction =
     Jump BlockNum |
     Phi Registry Type [(ExpVal, BlockNum)] |
     GetElementPtr Registry Integer Name |
-    FunDecl Name Type [Type]
+    FunDecl Name Type [Type] |
+    Bitcast Registry ExpVal Type
 
 --- printing utils -------------------------------------
 
@@ -91,8 +98,8 @@ globalName (Ident name) = '@':name
 constName :: Counter -> Name
 constName strNum = printf "@.str%s" (show strNum)
 
-classReg :: Ident -> Registry
-classReg (Ident clsName) = "%class." ++ clsName
+classRepr :: Ident -> Registry
+classRepr (Ident clsName) = "%class." ++ clsName
 
 label :: BlockNum -> Label
 label num = printf "label%s" (show num)
@@ -121,9 +128,14 @@ showLLVMType Int = "i32"
 showLLVMType Str = "i8*"
 showLLVMType Bool = "i1"
 showLLVMType Void = "void"
+showLLVMType (Cls ident) = classRepr ident
+showLLVMType (Ptr t) = printf "%s*" (showLLVMType t)
+
+showClsRepr :: LatteClass -> String
+showClsRepr cls = classRepr (clsIdent cls)
 
 printWithSeparator :: [String] -> String -> String
-printWithSeparator strings sep = unwords $ List.intersperse "," strings
+printWithSeparator strings sep = unwords $ List.intersperse sep strings
 
 showFunArgs :: [ExpVal] -> String
 showFunArgs args = printWithSeparator (map show args) ","
@@ -142,6 +154,15 @@ instance Show ExpValRepr where
 
 instance Show ExpVal where
     show val = printf "%s %s" (showLLVMType $ type_ val) (show $ repr val)
+
+instance show LatteClass where
+    show cls =
+        let
+            fieldsReprs = printWithSeparator (map showLLVMType (fieldTypes cls)) ","
+        in
+            case ancestor cls of
+                Nothing -> printf "%s = type { %s }" (showClsRepr cls) fieldsReprs
+                Just ancestorCls = printf "%s = type { %s , %s }" (showClsRepr cls) (showClsRepr ancestorCls) fieldsReprs
 
 instance Show BinOp where
     show Add = "add"
@@ -186,14 +207,15 @@ instance Show Instruction where
     show (Jump labelNum) = printf "br label %s" ('%':(label labelNum))
     show (Phi result t exprsFromLabels) = 
         printf "%s = phi %s %s" result (showLLVMType t) (showPhiExprs exprsFromLabels)
-    show (GetElementPtr resultReg length constName) = 
-        printf "%s = getelementptr inbounds [%s x i8]* %s, i32 0, i32 0" resultReg (show length) constName
+    show (GetElementPtr resultReg t name index) = 
+        printf "%s = getelementptr inbounds %s %s, i32 0, i32 %s" resultReg (showLLVMType t) name (show index)
     show (FunDecl name retType argTypes) =
         let
             showArgTypes = printWithSeparator (map showLLVMType argTypes) ","
         in 
             printf "declare %s @%s(%s)" (showLLVMType retType) name showArgTypes
-
+    show (Bitcast resultReg val t) =
+        printf "%s = bitcast %s to %s" resultReg (show val) (showLLVMType t)
 --------------------------------------------------------------------------
 
 emptyEnv :: Environment
@@ -361,11 +383,6 @@ emitRelOpInstr e1 e2 relOp resultReg = do
     return Bool
 
 emitExprInstruction :: Expr -> Registry -> Eval Type
-emitExprInstruction (EVar ident) resultReg = do
-    env <- ask
-    let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
-    addInstruction $ Load resultReg t reg
-    return t
 emitExprInstruction (EApp ident args) resultReg = do
     env <- ask
     let Just (EnvElem name t) = Map.lookup ident (funEnv env)
@@ -418,6 +435,43 @@ getStringName s = do
             }
             return name
 
+-- TODO: move typeable to utils
+getFieldType :: Field -> Type
+getFieldType (Field t ident) = t
+
+getClass :: Ident -> Eval LatteClass
+getClass ident = do
+    store <- get
+    let Just cls = Map.lookup ident (classes store)
+    return cls
+
+getClassWithField :: Ident -> LatteClass -> Eval LatteClass
+getField fieldIdent cls = do
+    if elem fieldIdent (fieldIdents cls) then
+        return cls
+    else do
+        -- Program was accepted by frontend, therefore field must be inherited
+        let Just ancestorCls = ancestor cls
+        getClassWithField fieldIdent ancestorCls
+
+thisIdent :: Ident
+thisIdent = Ident ".this"
+
+emitGetField 
+
+getActClassField :: Ident -> Eval ExpVal
+getActClassField fieldIdent = do
+    env <- ask
+    let Just actCls = actClass env
+    clsWithField <- getClassWithField fieldIdent actCls
+    thisVal <- emitExpr (EVar thisIdent)
+    if (clsIdent actCls) /= (clsIdent clsWithField) then do
+        bitcastReg <- getNextRegistry
+        let clsType = Ptr $ Cls $ clsIdent clsWithField
+        addInstruction $ Bitcast bitcastReg thisVal clsType
+
+    else
+
 emitExpr :: Expr -> Eval ExpVal
 emitExpr (ELitInt n) = return $ numExpVal n
 emitExpr ELitTrue = return $ boolExpVal True
@@ -464,6 +518,14 @@ emitExpr (EOr expr1 expr2) = do
     resultReg <- getNextRegistry
     addInstruction $ Phi resultReg Bool [(trueExpVal, actBlockNum1), (val2, actBlockNum2)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
+emitExpr (EVar ident) = do
+    env <- ask
+    case Map.lookup ident (varEnv env) of
+        Nothing -> getActClassField ident
+        Just (EnvElem reg t) -> do
+            resultReg <- getNextRegistry
+            addInstruction $ Load resultReg t reg
+            return $ ExpVal {repr = RegVal resultReg, type_ = t}
 emitExpr expr = do
     result <- getNextRegistry
     t <- emitExprInstruction expr result
@@ -676,11 +738,32 @@ addArgs ((Arg type_ ident):args) = do
             funEnv = funEnv env
         }
 
--- TODO: move typeable to utils
-getFieldType :: Field -> Type
-getFieldType (Field t ident) = t
-
-addNewCls :: Ident -> Fields -> 
+addNewCls :: Ident -> Fields -> Maybe LatteClass -> Eval LatteClass
+addNewCls clsIdent fields ancestor = do
+    let (idents, types) = unzip $ map zipField fields
+    let cls = LatteClass {
+        clsIdent = clsIdent,
+        fieldIdents = idents,
+        fieldTypes = types,
+        ancestor = ancestor,
+        vtable = []
+    }
+    store <- get
+    put $ Store {
+        blocks = blocks store,
+        actBlockNum = actBlockNum store,
+        regCounter = regCounter store,
+        constCounter = constCounter store,
+        labelCounter = labelCounter store,
+        strConstants = strConstants store,
+        classes = Map.insert clsIdent cls (classes store),
+        classesReprs = (show cls):(classesReprs store),
+        compiled = compiled store
+    }
+    return cls
+    where
+        zipField :: Field -> (Ident, Type)
+        zipField (Field t ident) = (ident, t)
 
 emitTopDef :: TopDef -> Eval ()
 emitTopDef (FnTopDef (FnDef t ident args block)) = do
@@ -699,10 +782,14 @@ emitTopDef (FnTopDef (FnDef t ident args block)) = do
             let val = ExpVal {repr = RegVal reg, type_ = t}
             env <- declare ident val
             local (\_ -> env) (declareArgs args)
--- TODO: actCls : Maybe LLVMClass
+-- TODO: methods
 emitTopDef (ClsDef ident fields methods) = do
-    clsName <- addNewCls ident fields
-    local setActClass (sequence $ map emitMethod methods)
+    cls <- addNewCls ident fields Nothing
+    return ()
+emitTopDef (ClsExtDef ident ancestorIdent fields methods) = do
+    ancestorCls <- getClass ancestorIdent
+    cls <- addNewCls ident fields (Just ancestorIdent)
+    return ()
 
 reverseInstructions :: Eval ()
 reverseInstructions = do
@@ -727,6 +814,22 @@ addOuterDeclarations = addCompiled $ map show declarations
             FunDecl "readInt" Int [],
             FunDecl "readString" Str [],
             FunDecl "concat_" Str [Str, Str]]
+
+addClassDeclarations :: Eval ()
+addClassDeclarations = do
+    store <- get
+    put $ Store {
+        blocks = blocks store,
+        actBlockNum = actBlockNum store,
+        regCounter = regCounter store,
+        constCounter = constCounter store,
+        labelCounter = labelCounter store,
+        strConstants = strConstants store,
+        classes = classes Store,
+        classesReprs = [],
+        compiled = (classesReprs store) ++ (compiled store)
+    }
+    
 
 addStringsDefinitions :: Eval ()
 addStringsDefinitions = do
@@ -781,5 +884,7 @@ emitProgram (Program topDefs) = do
     reverseInstructions
     addCompiled [""]
     addOuterDeclarations
+    addCompiled [""]
+    addClassDeclarations
     addCompiled [""]
     addStringsDefinitions
