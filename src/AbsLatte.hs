@@ -10,7 +10,7 @@ data Program =
 
 data TopDef =
    FnTopDef FnDef
- | ClsDef :qIdent [Field] [FnDef]
+ | ClsDef Ident [Field] [FnDef]
  | ClsExtDef Ident Ident [Field] [FnDef]
   deriving (Eq,Ord,Show)
 
@@ -60,6 +60,7 @@ data Type =
  | Fun Type [Type]
  | Cls Ident
  | Ptr Type
+ | Vtable Ident
  | Arr Int Type
   deriving (Eq,Ord,Show)
 
