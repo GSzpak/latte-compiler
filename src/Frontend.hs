@@ -123,11 +123,18 @@ getIdentType ident envSelector errMessage = do
 
 checkTypes :: Type -> Type -> Eval Type
 checkTypes actType expectedType = do
-    typesEqual <- isType actType expectedType
-    if typesEqual then
+    accepted <- isType actType expectedType
+    if accepted then
         return actType
     else
         throwError $ incomaptibleTypesErr expectedType actType
+
+checkTypesEquality :: Type -> Type -> Eval Type
+checkTypesEquality type1 type2 = do
+    if type1 == type2 then
+        return type1
+    else
+        throwError $ incomaptibleTypesErr type1 type2
 
 checkExprType :: Expr -> Type -> Eval Type
 checkExprType expr expectedType = do
@@ -147,6 +154,13 @@ checkTwoArgExpression expr1 expr2 expectedTypes retType = do
             Just t -> t
     else
         throwError $ unexpectedTypeErr resultType
+
+checkEqExpr :: Expr -> Expr -> Eval Type
+checkEqExpr expr1 expr2 = do
+    t1 <- evalExprType expr1
+    t2 <- evalExprType expr2
+    checkTypesEquality t1 t2
+    return Bool
 
 evalFunType :: Ident -> Type -> [Type] -> [Expr] -> Eval Type
 evalFunType ident retType argTypes arguments = do
@@ -169,21 +183,23 @@ evalExprType ELitFalse = return Bool
 evalExprType (EString _) = return Str
 evalExprType (Neg expr) = checkExprType expr Int
 evalExprType (Not expr) = checkExprType expr Bool
-evalExprType e@(EMul expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int] Nothing
-evalExprType e@(EAdd expr1 Plus expr2) = checkTwoArgExpression expr1 expr2 [Int, Str] Nothing
-evalExprType e@(EAdd expr1 Minus expr2) = checkTwoArgExpression expr1 expr2 [Int] Nothing
-evalExprType e@(ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str] (Just Bool)
-evalExprType e@(EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
-evalExprType e@(EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
-evalExprType e@(EApp ident arguments) = do
+evalExprType (EMul expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int] Nothing
+evalExprType (EAdd expr1 Plus expr2) = checkTwoArgExpression expr1 expr2 [Int, Str] Nothing
+evalExprType (EAdd expr1 Minus expr2) = checkTwoArgExpression expr1 expr2 [Int] Nothing
+evalExprType (ERel expr1 EQU expr2) = checkEqExpr expr1 expr2
+evalExprType (ERel expr1 NE expr2) = checkEqExpr expr1 expr2
+evalExprType (ERel expr1 _ expr2) = checkTwoArgExpression expr1 expr2 [Int, Bool, Str] (Just Bool)
+evalExprType (EAnd expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
+evalExprType (EOr expr1 expr2) = checkTwoArgExpression expr1 expr2 [Bool] Nothing
+evalExprType (EApp ident arguments) = do
     Fun t argTypes <- getIdentType ident funEnv (undeclaredErr "function" ident)
     evalFunType ident t argTypes arguments
 evalExprType (ENew ident) = do
     checkIfClsDeclared ident
-    return $ Cls ident
+    return $ Ptr $ Cls ident
 evalExprType (ENull ident) = do
     checkIfClsDeclared ident
-    return $ Cls ident
+    return $ Ptr $ Cls ident
 evalExprType (EMApp clsIdent methodIdent arguments) = do
     maybeCls <- getCls clsIdent
     case maybeCls of
