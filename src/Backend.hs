@@ -552,14 +552,24 @@ emitExpr (EMApp objIdent methodId args) = do
     let Ptr (Fun retType argTypes) = pointerType vtableElem
     addInstruction $ Load fun (pointerType vtableElem) funPointer
     argReprs <- mapM emitExpr args
-    resultReg <- getNextRegistry
     let self = ExpVal {repr = RegVal objReg, type_ = Cls clsIdent}
-    addInstruction $ Call resultReg retType fun (self:argReprs)
+    castedArgs <- mapM castArg (zip argTypes (self:argReprs))
+    resultReg <- getNextRegistry
+    addInstruction $ Call resultReg retType fun castedArgs
     return ExpVal {repr = RegVal resultReg, type_ = retType}
 emitExpr expr = do
     result <- getNextRegistry
     t <- emitExprInstruction expr result
     return $ ExpVal {repr = RegVal result, type_ = t}
+
+castArg :: (Type, ExpVal) -> Eval ExpVal
+castArg (actType, val) = do
+    if actType == type_ val then
+        return val
+    else do
+        resultReg <- getNextRegistry
+        addInstruction $ Bitcast resultReg val actType
+        return ExpVal {repr = RegVal resultReg, type_ = actType}
 
 setVtable :: Ident -> Type -> Registry -> Eval ()
 setVtable clsIdent pointerType pointerReg = do
@@ -603,7 +613,7 @@ declare ident actType val = do
     reg <- getNextRegistry
     addInstruction $ Alloca reg actType
     emitStoreInstr actType reg val
-    return $ env {varEnv = Map.insert ident (EnvElem reg (type_ val)) (varEnv env)}
+    return $ env {varEnv = Map.insert ident (EnvElem reg actType) (varEnv env)}
 
 emitStoreInstr :: Type -> Registry -> ExpVal -> Eval ()
 emitStoreInstr actType result val =
