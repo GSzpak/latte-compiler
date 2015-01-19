@@ -92,7 +92,7 @@ eitherResIdent tv s = treeFind resWords
                               | s > a  = treeFind right
                               | s == a = t
 
-resWords = b ">" 20 (b "," 10 (b "(" 5 (b "%" 3 (b "!=" 2 (b "!" 1 N N) N) (b "&&" 4 N N)) (b "+" 8 (b "*" 7 (b ")" 6 N N) N) (b "++" 9 N N))) (b ";" 15 (b "." 13 (b "--" 12 (b "-" 11 N N) N) (b "/" 14 N N)) (b "=" 18 (b "<=" 17 (b "<" 16 N N) N) (b "==" 19 N N)))) (b "null" 30 (b "extends" 25 (b "class" 23 (b "boolean" 22 (b ">=" 21 N N) N) (b "else" 24 N N)) (b "int" 28 (b "if" 27 (b "false" 26 N N) N) (b "new" 29 N N))) (b "while" 35 (b "true" 33 (b "string" 32 (b "return" 31 N N) N) (b "void" 34 N N)) (b "||" 37 (b "{" 36 N N) (b "}" 38 N N))))
+resWords = b ">" 20 (b "," 10 (b "(" 5 (b "%" 3 (b "!=" 2 (b "!" 1 N N) N) (b "&&" 4 N N)) (b "+" 8 (b "*" 7 (b ")" 6 N N) N) (b "++" 9 N N))) (b ";" 15 (b "." 13 (b "--" 12 (b "-" 11 N N) N) (b "/" 14 N N)) (b "=" 18 (b "<=" 17 (b "<" 16 N N) N) (b "==" 19 N N)))) (b "new" 30 (b "else" 25 (b "boolean" 23 (b "Char" 22 (b ">=" 21 N N) N) (b "class" 24 N N)) (b "if" 28 (b "false" 27 (b "extends" 26 N N) N) (b "int" 29 N N))) (b "void" 35 (b "string" 33 (b "return" 32 (b "null" 31 N N) N) (b "true" 34 N N)) (b "||" 38 (b "{" 37 (b "while" 36 N N) N) (b "}" 39 N N))))
    where b s n = let bs = id s
                   in B bs (TS bs n)
 
@@ -180,7 +180,6 @@ alex_action_6 =  tok (\p s -> PT p (TL $ share $ unescapeInitTail s))
 alex_action_7 =  tok (\p s -> PT p (TI $ share s))    
 {-# LINE 1 "templates/GenericTemplate.hs" #-}
 {-# LINE 1 "templates/GenericTemplate.hs" #-}
-{-# LINE 1 "<built-in>" #-}
 {-# LINE 1 "<command-line>" #-}
 
 
@@ -206,6 +205,9 @@ alex_action_7 =  tok (\p s -> PT p (TI $ share s))
 
 
 
+# 1 "/usr/include/x86_64-linux-gnu/bits/predefs.h" 1 3 4
+
+# 18 "/usr/include/x86_64-linux-gnu/bits/predefs.h" 3 4
 
 
 
@@ -218,6 +220,7 @@ alex_action_7 =  tok (\p s -> PT p (TI $ share s))
 
 
 
+# 31 "/usr/include/stdc-predef.h" 2 3 4
 
 
 
@@ -226,15 +229,7 @@ alex_action_7 =  tok (\p s -> PT p (TI $ share s))
 
 
 
-
-
-
-
-
-
-
-
-{-# LINE 7 "<command-line>" #-}
+# 7 "<command-line>" 2
 {-# LINE 1 "templates/GenericTemplate.hs" #-}
 -- -----------------------------------------------------------------------------
 -- ALEX TEMPLATE
@@ -251,7 +246,6 @@ alex_action_7 =  tok (\p s -> PT p (TI $ share s))
 
 
 
--- Do not remove this comment. Required to fix CPP parsing when using GCC and a clang-compiled alex.
 #if __GLASGOW_HASKELL__ > 706
 #define GTE(n,m) (tagToEnum# (n >=# m))
 #define EQ(n,m) (tagToEnum# (n ==# m))
@@ -259,11 +253,11 @@ alex_action_7 =  tok (\p s -> PT p (TI $ share s))
 #define GTE(n,m) (n >=# m)
 #define EQ(n,m) (n ==# m)
 #endif
-{-# LINE 51 "templates/GenericTemplate.hs" #-}
+{-# LINE 50 "templates/GenericTemplate.hs" #-}
 
 
 data AlexAddr = AlexA# Addr#
--- Do not remove this comment. Required to fix CPP parsing when using GCC and a clang-compiled alex.
+
 #if __GLASGOW_HASKELL__ < 503
 uncheckedShiftL# = shiftL#
 #endif
@@ -301,7 +295,6 @@ alexIndexInt32OffAddr (AlexA# arr) off =
 #else
   indexInt32OffAddr# arr off
 #endif
-
 
 
 
@@ -395,7 +388,7 @@ alex_scan_tkn user orig_input len input s last_acc =
 	check_accs (AlexAccNone) = last_acc
 	check_accs (AlexAcc a  ) = AlexLastAcc a input (I# (len))
 	check_accs (AlexAccSkip) = AlexLastSkip  input (I# (len))
-{-# LINE 198 "templates/GenericTemplate.hs" #-}
+{-# LINE 196 "templates/GenericTemplate.hs" #-}
 
 data AlexLastAcc a
   = AlexNone
@@ -411,7 +404,7 @@ data AlexAcc a user
   = AlexAccNone
   | AlexAcc a
   | AlexAccSkip
-{-# LINE 242 "templates/GenericTemplate.hs" #-}
+{-# LINE 240 "templates/GenericTemplate.hs" #-}
 
 -- used by wrappers
 iUnbox (I# (i)) = i

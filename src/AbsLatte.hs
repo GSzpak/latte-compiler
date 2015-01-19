@@ -22,7 +22,8 @@ data Arg =
    Arg Type Ident
   deriving (Eq,Ord,Show)
 
-data Field = Field Type Ident
+data Field =
+   Field Type Ident
   deriving (Eq,Ord,Show)
 
 data Block =
@@ -54,12 +55,12 @@ data Type =
  | Str
  | Bool
  | Void
- | Char
- | Fun Type [Type]
  | Cls Ident
+ | Fun Type [Type]
+ | Char
  | Ptr Type
- | VtableType Ident
  | Arr Integer Type
+ | VtableType Ident
   deriving (Eq,Ord,Show)
 
 data Expr =

@@ -16,7 +16,7 @@ separator  nonempty TopDef "" ;
 
 FnDef.     FnDef ::= Type Ident "(" [Arg] ")" Block ;
 
-separator  FnDef "" ;
+separator  nonempty FnDef "" ;
 
 Arg. 	   Arg ::= Type Ident ;
 
@@ -72,9 +72,13 @@ Bool.      Type ::= "boolean" ;
 
 Void.      Type ::= "void" ;
 
+Cls.       Type ::= Ident ;
+
 internal   Fun. Type ::= Type "(" [Type] ")" ;
 
-internal   Cls. Type ::= "class" Ident;
+internal   Char. Type ::= "Char" ;
+
+internal   Ptr. Type ::= Type "*" ;
 
 separator  Type "," ;
 

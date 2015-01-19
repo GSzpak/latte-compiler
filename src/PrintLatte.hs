@@ -103,7 +103,7 @@ instance Print FnDef where
    FnDef type' id args block -> prPrec i 0 (concatD [prt 0 type' , prt 0 id , doc (showString "(") , prt 0 args , doc (showString ")") , prt 0 block])
 
   prtList es = case es of
-   [] -> (concatD [])
+   [x] -> (concatD [prt 0 x])
    x:xs -> (concatD [prt 0 x , prt 0 xs])
 
 instance Print Arg where
@@ -162,8 +162,10 @@ instance Print Type where
    Str  -> prPrec i 0 (concatD [doc (showString "string")])
    Bool  -> prPrec i 0 (concatD [doc (showString "boolean")])
    Void  -> prPrec i 0 (concatD [doc (showString "void")])
+   Cls id -> prPrec i 0 (concatD [prt 0 id])
    Fun type' types -> prPrec i 0 (concatD [prt 0 type' , doc (showString "(") , prt 0 types , doc (showString ")")])
-   Cls id -> prPrec i 0 (concatD [doc (showString "class") , prt 0 id])
+   Char  -> prPrec i 0 (concatD [doc (showString "Char")])
+   Ptr type' -> prPrec i 0 (concatD [prt 0 type' , doc (showString "*")])
 
   prtList es = case es of
    [] -> (concatD [])
