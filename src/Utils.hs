@@ -22,3 +22,9 @@ instance Typeable Field where
 
 getIdent :: Field -> Ident
 getIdent (Field _ ident) = ident
+
+selfIdent :: Ident
+selfIdent = Ident "self"
+
+selfArg :: Ident -> Arg
+selfArg clsIdent =  Arg (Cls clsIdent) selfIdent

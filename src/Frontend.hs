@@ -223,27 +223,14 @@ declareVar ident t env =
             blockDepth = actBlockDepth env
         }
     in 
-        Env {
-            varEnv = Map.insert ident newVar (varEnv env),
-            funEnv = funEnv env,
-            classEnv = classEnv env,
-            actBlockDepth = actBlockDepth env,
-            actReturnType = actReturnType env
-        }
+        env {varEnv = Map.insert ident newVar (varEnv env)}
+
+incBlockDepth :: Env -> Env
+incBlockDepth env = env {actBlockDepth = (actBlockDepth env) + 1}
 
 checkStmt :: Stmt -> Eval Env
 checkStmt Empty = ask
-checkStmt (BStmt block) =
-    local updateBlockDepth (checkBlock block)
-    where
-        updateBlockDepth :: Env -> Env
-        updateBlockDepth env = Env {
-            varEnv = varEnv env,
-            funEnv = funEnv env,
-            classEnv = classEnv env,
-            actBlockDepth = (actBlockDepth env) + 1,
-            actReturnType = actReturnType env
-        }
+checkStmt (BStmt block) = local incBlockDepth (checkBlock block)
 checkStmt (Decl t items) = do 
     checkIfTypeDeclared t
     if t == Void then
@@ -509,10 +496,7 @@ checkFun (FnDef t ident args block)  = do
         return $ FnDef t ident args (Block optimized)
     where
         prepareBlockCheck :: Env -> Env
-        prepareBlockCheck env = Env {
-            varEnv = varEnv env,
-            funEnv = funEnv env,
-            classEnv = classEnv env,
+        prepareBlockCheck env = env {
             actBlockDepth = (actBlockDepth env) + 1,
             actReturnType = t
         }
@@ -540,10 +524,13 @@ addFieldsToEnv ((Field t ident):fields) =
     local (declareVar ident t) (addFieldsToEnv fields)
 
 checkCls :: Ident -> [Field] -> [FnDef] -> Eval [FnDef]
-checkCls ident fields methods = do
+checkCls clsIdent fields methods = do
     env <- addFieldsToEnv fields
-    optimizedMethods <- local (\_ -> env) (mapM checkFunction methods)
+    optimizedMethods <- local (\_ -> incBlockDepth env) (mapM checkFunction (map addSelfArg methods))
     return optimizedMethods
+    where
+        addSelfArg :: FnDef -> FnDef
+        addSelfArg (FnDef t ident args block) = FnDef t ident ((selfArg clsIdent):args) block
 
 checkClass :: Ident -> [Field] -> [FnDef] -> Eval [FnDef]
 checkClass ident fields methods =
