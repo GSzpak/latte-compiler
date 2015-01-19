@@ -26,7 +26,8 @@ instance Typeable VarEnvElem where
     getType varEnvElem = type_ varEnvElem
 
 data ClassEnvElem = ClassEnvElem {
-    ancestors :: Set.Set Ident,
+    clsIdent :: Ident,
+    ancestor :: Maybe ClassEnvElem,
     fields :: TypeEnv EnvElem,
     methods :: TypeEnv EnvElem
 } deriving Show
@@ -61,13 +62,6 @@ emptyEnv = Env {
 name :: Ident -> String
 name (Ident s) = s
 
-isType :: Type -> Type -> Eval Bool
-isType (Cls ident1) (Cls ident2) = do
-    env <- ask
-    let Just cls = Map.lookup ident1 (classEnv env)
-    return $ Set.member ident2 (ancestors cls)
-isType t1 t2 = return $ t1 == t2
-
 ---------------- errors ---------------------------------------------
 
 incomaptibleTypesErr :: Type -> Type -> String
@@ -98,7 +92,7 @@ intRetTypeErr t = printf "Invalid return type of \"main\" function: expected %s,
 
 undeclaredMethodErr :: Ident -> Ident -> String
 undeclaredMethodErr clsIdent methodIdent = 
-    printf "Undeclared method %s in class %s" (name clsIdent) (name methodIdent)
+    printf "Undeclared method %s in class %s" (name methodIdent) (name clsIdent)
 
 --------------------- expr types --------------------------------------------
 
@@ -108,6 +102,18 @@ getIdentType ident envSelector errMessage = do
     case Map.lookup ident (envSelector env) of
         Just envElem -> return $ getType envElem
         Nothing -> throwError errMessage
+
+isType :: Type -> Type -> Eval Bool
+isType (Cls ident1) (Cls ident2) = do
+    env <- ask
+    if ident1 == ident2 then
+        return True
+    else do
+        let Just cls = Map.lookup ident1 (classEnv env)
+        case ancestor cls of
+            Nothing -> return False
+            Just ancestor -> isType (Cls $ clsIdent ancestor) (Cls ident2)
+isType t1 t2 = return $ t1 == t2
 
 checkTypes :: Type -> Type -> Eval Type
 checkTypes actType expectedType = do
@@ -183,18 +189,20 @@ evalExprType (EApp ident arguments) = do
     Fun t argTypes <- getIdentType ident funEnv (undeclaredErr "function" ident)
     evalFunType ident t argTypes arguments
 evalExprType (ENew ident) = do
-    checkIfClsDeclared ident
-    return $ Ptr $ Cls ident
+    getExistingCls ident
+    return $ Cls ident
 evalExprType (ENull ident) = do
-    checkIfClsDeclared ident
-    return $ Ptr $ Cls ident
-evalExprType (EMApp clsIdent methodIdent arguments) = do
-    maybeCls <- getCls clsIdent
-    case maybeCls of
-        Nothing -> throwError $ undeclaredErr "class" clsIdent
-        Just cls -> case Map.lookup methodIdent (methods cls) of
-            Nothing -> throwError $ undeclaredMethodErr clsIdent methodIdent
-            Just (Fun t argTypes) -> evalFunType methodIdent t argTypes arguments
+    getExistingCls ident
+    return $ Cls ident
+evalExprType (EMApp objIdent methodIdent arguments) = do
+    identType <- evalExprType (EVar objIdent)
+    case identType of
+        Cls clsIdent -> (do
+            cls <- getExistingCls clsIdent
+            case Map.lookup methodIdent (methods cls) of
+                    Nothing -> throwError $ undeclaredMethodErr clsIdent methodIdent
+                    Just (Fun t argTypes) -> evalFunType methodIdent t argTypes arguments)
+        _ -> throwError $ unexpectedTypeErr identType
 
 checkIfVarDeclared :: Ident -> Eval ()
 checkIfVarDeclared ident = do
@@ -478,21 +486,16 @@ hasReturn (CondElse _ stmt1 stmt2) = (hasReturn stmt1) && (hasReturn stmt2)
 hasReturn (BStmt (Block stmts)) = any hasReturn stmts
 hasReturn _ = False
 
-checkIfClsDeclared :: Ident -> Eval ()
-checkIfClsDeclared ident = do
-    maybeCls <- getCls ident
-    case maybeCls of
-        Just _ -> return ()
-        Nothing -> throwError $ undeclaredErr "class" ident
-
 checkIfTypeDeclared ::  Type -> Eval ()
-checkIfTypeDeclared (Cls ident) = checkIfClsDeclared ident
+checkIfTypeDeclared (Cls ident) = do
+    _ <- getExistingCls ident
+    return ()
 checkIfTypeDeclared _ = return ()
 
 checkFun :: FnDef -> Eval FnDef
-checkFun (FnDef t ident args block) = do
+checkFun (FnDef t ident args block)  = do
     env <- ask
-    let Just (Fun t argTypes) = Map.lookup ident (funEnv env)
+    let argTypes = map getType args
     sequence_  $ map checkIfTypeDeclared (t:argTypes)
     checkIfAnyVoid argTypes
     env <- declareArgs args
@@ -533,7 +536,7 @@ checkFunction fun@(FnDef _ ident _ _) =
 
 addFieldsToEnv :: [Field] -> Eval Env
 addFieldsToEnv [] = ask
-addFeildsToEnv ((Field t ident):fields) =
+addFieldsToEnv ((Field t ident):fields) =
     local (declareVar ident t) (addFieldsToEnv fields)
 
 checkCls :: Ident -> [Field] -> [FnDef] -> Eval [FnDef]
@@ -580,49 +583,6 @@ declareBuiltIn =
             actReturnType = actReturnType env
         }
 
-
-declareFields :: [Field] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
-declareFields [] accu = return accu
-declareFields ((Field t ident):fields) accu =
-    case Map.lookup ident accu of
-        Nothing -> declareFields fields (Map.insert ident t accu)
-        Just _ -> throwError $ duplicatedErr "field" ident
-
-declareMethods :: [FnDef] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
-declareMethods [] accu = return accu
-declareMethods ((FnDef t ident _ _):methods) accu =
-    case Map.lookup ident accu of
-        Nothing -> declareMethods methods (Map.insert ident t accu)
-        Just _ -> throwError $ duplicatedErr "method" ident
-
-declareCls :: Ident -> Set.Set Ident -> [Field] -> [FnDef] -> Eval Env
-declareCls ident ancestors fields methods = do
-    clsFields <- declareFields fields Map.empty
-    clsMethods <- declareMethods methods Map.empty
-    local (addCls clsFields clsMethods) ask
-    where
-        addCls :: TypeEnv EnvElem -> TypeEnv EnvElem -> Env -> Env
-        addCls clsFields clsMethods env =
-            let
-                newCls = ClassEnvElem {
-                    ancestors = ancestors,
-                    fields = clsFields,
-                    methods = clsMethods
-                }
-            in Env {
-                varEnv = varEnv env,
-                funEnv = funEnv env,
-                classEnv = Map.insert ident newCls (classEnv env),
-                actBlockDepth = actBlockDepth env,
-                actReturnType = actReturnType env
-            }
-
-declareClass :: Ident -> Set.Set Ident -> [Field] -> [FnDef] -> Eval Env
-declareClass ident ancestors fields methods = 
-    (declareCls ident ancestors fields methods)
-    `catchError` 
-    (\message -> throwError $ printf "%s in class: %s" message (name ident))
-
 checkIfFunDuplicated :: Ident -> Eval ()
 checkIfFunDuplicated ident = do
     env <- ask
@@ -642,12 +602,53 @@ checkIfClsDuplicated ident = do
         Just _ -> throwError $ duplicatedErr "class" ident
         Nothing -> return ()
 
-getAncestors :: Ident -> Eval (Set.Set Ident)
-getAncestors ancestor = do
-    maybeAncestorCls <- getCls ancestor
-    case maybeAncestorCls of
-        Just ancestorCls -> return $ Set.insert ancestor (ancestors ancestorCls)
-        Nothing -> throwError $ undeclaredErr "class" ancestor
+declareFields :: [Field] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
+declareFields [] accu = return accu
+declareFields ((Field t ident):fields) accu =
+    case Map.lookup ident accu of
+        Nothing -> declareFields fields (Map.insert ident t accu)
+        Just _ -> throwError $ duplicatedErr "field" ident
+
+declareMethods :: [FnDef] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
+declareMethods [] accu = return accu
+declareMethods ((FnDef t ident args _):methods) accu = do
+    let argTypes = map getType args
+    case Map.lookup ident accu of
+        Nothing -> declareMethods methods (Map.insert ident (Fun t argTypes) accu)
+        Just _ -> throwError $ duplicatedErr "method" ident
+
+declareCls :: Ident -> Maybe ClassEnvElem -> [Field] -> [FnDef] -> Eval Env
+declareCls ident ancestor fieldList methodList = do
+    (fieldsAccu, methodsAccu) <- case ancestor of
+        Nothing -> return (Map.empty, Map.empty)
+        Just cls -> return (fields cls, methods cls) 
+    clsFields <- declareFields fieldList fieldsAccu
+    clsMethods <- declareMethods methodList methodsAccu
+    local (addCls clsFields clsMethods) ask
+    where
+        addCls :: TypeEnv EnvElem -> TypeEnv EnvElem -> Env -> Env
+        addCls clsFields clsMethods env =
+            let
+                newCls = ClassEnvElem {
+                    clsIdent = ident,
+                    ancestor = ancestor,
+                    fields = clsFields,
+                    methods = clsMethods
+                }
+            in env {classEnv = Map.insert ident newCls (classEnv env)}
+
+declareClass :: Ident -> Maybe ClassEnvElem -> [Field] -> [FnDef] -> Eval Env
+declareClass ident ancestor fields methods = 
+    (declareCls ident ancestor fields methods)
+    `catchError` 
+    (\message -> throwError $ printf "%s in class: %s" message (name ident))
+
+getExistingCls :: Ident -> Eval ClassEnvElem
+getExistingCls ident = do
+    maybeCls <- getCls ident
+    case maybeCls of
+        Nothing -> throwError $ undeclaredErr "class" ident
+        Just cls -> return cls
 
 declareTopDefs :: [TopDef] -> Eval Env
 declareTopDefs [] = ask
@@ -665,12 +666,12 @@ declareTopDefs ((FnTopDef fun@(FnDef t ident _ _)):defs) = do
         }
 declareTopDefs ((ClsDef ident fields methods):defs) = do
     checkIfClsDuplicated ident
-    env' <- declareClass ident Set.empty fields methods
+    env' <- declareClass ident Nothing fields methods
     local (\_ -> env') (declareTopDefs defs)
-declareTopDefs ((ClsExtDef ident ancestor fields methods):defs) = do
+declareTopDefs ((ClsExtDef ident ancestorId fields methods):defs) = do
     checkIfClsDuplicated ident
-    ancestors <- getAncestors ancestor
-    env' <- declareClass ident ancestors fields methods
+    ancestor <- getExistingCls ancestorId
+    env' <- declareClass ident (Just ancestor) fields methods
     local (\_ -> env') (declareTopDefs defs)
 
 checkMain :: Eval ()
