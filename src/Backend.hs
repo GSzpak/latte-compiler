@@ -58,7 +58,6 @@ data Environment = Environment {
     actClass :: Maybe LatteClass
 } deriving Show
 
-
 data Store = Store {
     blocks :: Map.Map BlockNum LLVMBlock,
     actBlockNum :: BlockNum,
@@ -562,7 +561,7 @@ emitExpr (ENew ident) = do
     resultReg <- getNextRegistry
     let pointerType = Ptr $ Cls ident
     addInstruction $ Bitcast resultReg mallocVal pointerType
-    setVtable cls resultReg pointerType
+    setVtable (clsIdent cls) pointerType resultReg
     return ExpVal {repr = RegVal resultReg, type_ = pointerType}
 emitExpr (ENull ident) = return ExpVal {repr = NullVal, type_ = Ptr $ Cls ident}
 emitExpr (EMapp ident methodId args) = do
@@ -590,6 +589,13 @@ emitExpr expr = do
     t <- emitExprInstruction expr result
     return $ ExpVal {repr = RegVal result, type_ = t}
 
+setVtable :: Ident -> Type -> Registry -> Eval ()
+setVtable clsIdent pointerType pointerReg = do
+    vtableReg <- getNextRegistry
+    addInstruction $ GetElementPtr vtableReg pointerType pointerReg vtableIndex
+    let vtableVal = ExpVal {repr = RegVal (vtableName clsIdent), type_ = (Ptr $ VtableType clsIdent)}
+    addInstruction $ Store vtableVal vtableReg
+
 getVtableElem :: LatteClass -> Ident -> (Integer, VtableElem)
 getVTableElem cls method =
     let
@@ -597,11 +603,6 @@ getVTableElem cls method =
     in
         (toInteger index, (vtable cls) ! index)
 
-setVtable :: LatteClass -> Registry -> Type -> Eval ()
-setVTable cls pointerReg pointerType = do
-    reg <- getNextRegistry
-    addInstruction $ GetElementPtr reg pointerType pointerReg 0
-    addInstruction
 vtableIndex :: Integer
 vtableIndex = 0
 
@@ -616,13 +617,18 @@ getSize cls = case (ancestor cls) of
 
 ----------- statements ------------------------------------------------
 
-declare :: Ident -> ExpVal -> Eval Environment
-declare ident val = do
+setVtable :: ExpVal -> Eval ()
+setVtable val = do
+    let Ptr (Cls clsId) = type_ val
+    let RegVal reg = repr val
+
+
+declare :: Ident -> Type -> ExpVal -> Eval Environment
+declare ident actType val = do
     env <- ask
     reg <- getNextRegistry
-    let t = type_ val
     let env' = Environment {
-        varEnv = Map.insert ident (EnvElem reg t) (varEnv env),
+        varEnv = Map.insert ident (EnvElem reg (type_ val)) (varEnv env),
         funEnv = funEnv env
     }
     let alloca = Alloca reg t
@@ -630,19 +636,29 @@ declare ident val = do
     addInstructions [store, alloca]
     return env'
 
+emitStoreInstr :: Type -> Registry -> ExpVal -> Eval ()
+emitStoreInstr actType result val =
+    if actType /= type_ val then do
+        bitcastReg <- getNextRegistry
+        addInstruction $ Bitcast bitcastReg val actType 
+        let newVal = ExpVal {repr = RegVal bitcastReg, type_ = actType}
+        addInstruction $ StoreInstr newVal result
+    else
+        addInstruction $ StoreInstr val result
 emitDeclarations :: Type -> [Item] -> Eval Environment
 emitDeclarations _ [] = ask
 emitDeclarations t (item:items) = case item of
     Init ident expr -> (do
         val <- emitExpr expr
-        env <- declare ident val
+        env <- declare ident t val
         local (\_ -> env) (emitDeclarations t items))
     NoInit ident -> do
         val <- case t of
             Int -> return $ numExpVal 0
             Bool -> return falseExpVal
             Str -> emitExpr $ EString ""
-        env <- declare ident val
+            _ -> return NullVal
+        env <- declare ident t val
         local (\_ -> env) (emitDeclarations t items)
 
 emitCondExpr :: Expr -> BlockNum -> BlockNum -> BlockNum -> Eval ()
@@ -661,6 +677,17 @@ emitCondExpr expr actBlock trueBlock falseBlock = do
     setLastInstruction $ CondJump val trueBlock falseBlock 
     setActBlockNum newestBlock
 
+updateAssignment :: Ident -> Registry -> Type -> ExpVal -> Eval Environment
+updateAssignment ident valReg actType@(Ptr $ Cls oldCls) newVal = do
+    if actType == type_ newVal then
+        ask
+    else do
+        let RegVal reg = repr newVal
+        let Ptr (Cls newCls) = type_ newVal
+        result <- 
+        addInstruction $ Bitcast 
+updateAssignment _ _ _ _ = ask
+
 emitStmt :: Stmt -> Eval Environment
 emitStmt Empty = ask
 emitStmt (BStmt block) = do
@@ -670,8 +697,16 @@ emitStmt (Ass ident expr) = do
     env <- ask
     val <- emitExpr expr
     let Just (EnvElem reg t) = Map.lookup ident (varEnv env)
+    env' <- updateAssignment ident reg t val
     addInstruction $ StoreInstr val reg
-    ask
+    if t /= type_ val then
+        return $ Environment {
+            varEnv = Map.insert ident (EnvElem reg (type_ val)) (varEnv env)
+            funEnv = funEnv env,
+            actClass = actClass env
+        }
+    else
+        return env
 emitStmt (Decl type_ items) = emitDeclarations type_ items
 emitStmt (Incr ident) =
     emitStmt $ Ass ident (EAdd (EVar ident) Plus (ELitInt 1))
