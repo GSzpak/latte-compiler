@@ -22,10 +22,8 @@ data Arg =
    Arg Type Ident
   deriving (Eq,Ord,Show)
 
-data Field = Field {
-    getType :: Type,
-    getIdent :: Ident
-} deriving (Eq,Ord,Show)
+data Field = Field Type Ident
+  deriving (Eq,Ord,Show)
 
 data Block =
    Block [Stmt]
@@ -60,8 +58,8 @@ data Type =
  | Fun Type [Type]
  | Cls Ident
  | Ptr Type
- | Vtable Ident
- | Arr Int Type
+ | VtableType Ident
+ | Arr Integer Type
   deriving (Eq,Ord,Show)
 
 data Expr =

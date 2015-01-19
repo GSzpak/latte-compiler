@@ -9,6 +9,7 @@ import qualified Data.Set as Set
 import Control.Monad.Error
 import Control.Monad.Reader
 import Text.Printf
+import Utils
 
 
 type BlockDepth = Integer
@@ -20,6 +21,9 @@ data VarEnvElem = VarEnvElem {
     type_ :: Type,
     blockDepth :: BlockDepth
 } deriving Show
+
+instance Typeable VarEnvElem where
+    getType varEnvElem = type_ varEnvElem
 
 data ClassEnvElem = ClassEnvElem {
     ancestors :: Set.Set Ident,
@@ -40,22 +44,6 @@ data Env = Env {
 } deriving Show
 
 type Eval a = ReaderT Env (ErrorT String IO) a
-
-
-class Typeable a where
-    getType :: a -> Type
-
-instance Typeable Type where
-    getType t = t
-
-instance Typeable VarEnvElem where
-    getType varEnvElem = type_ varEnvElem
-
-instance Typeable Arg where
-    getType (Arg type_ _) = type_
-
-instance Typeable FnDef where
-    getType (FnDef t ident args _) = Fun t (map getType args)
 
 
 runEval :: Env -> Eval a -> IO (Either String a)
