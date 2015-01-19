@@ -442,9 +442,6 @@ getClassWithField fieldIdent cls = do
             let Just ancestorCls = ancestor cls
             getClassWithField fieldIdent ancestorCls
 
-thisIdent :: Ident
-thisIdent = Ident ".this"
-
 emitGetField :: LatteClass -> Int -> Registry -> Type -> Eval (Registry, Type)
 emitGetField cls index objReg objType = do
     let field = (fields cls) Vector.! index
@@ -460,15 +457,15 @@ getActClassField fieldIdent = do
     env <- ask
     let Just actCls = actClass env
     (clsWithField, index) <- getClassWithField fieldIdent actCls
-    thisVal <- emitExpr (EVar thisIdent)
+    selfVal <- emitExpr (EVar selfIdent)
     if (clsIdent actCls) /= (clsIdent clsWithField) then do
         bitcastReg <- getNextRegistry
         let clsType = Cls $ clsIdent clsWithField
-        addInstruction $ Bitcast bitcastReg thisVal clsType
+        addInstruction $ Bitcast bitcastReg selfVal clsType
         emitGetField clsWithField index bitcastReg clsType
     else do
-        let RegVal reg = repr thisVal
-        emitGetField clsWithField index reg (type_ thisVal)
+        let RegVal reg = repr selfVal
+        emitGetField clsWithField index reg (type_ selfVal)
 
 getIdentReg :: Ident -> Eval (Registry, Type)
 getIdentReg ident = do
@@ -556,8 +553,8 @@ emitExpr (EMApp objIdent methodId args) = do
     addInstruction $ Load fun (pointerType vtableElem) funPointer
     argReprs <- mapM emitExpr args
     resultReg <- getNextRegistry
-    let this = ExpVal {repr = RegVal objReg, type_ = Cls clsIdent}
-    addInstruction $ Call resultReg retType fun (this:argReprs)
+    let self = ExpVal {repr = RegVal objReg, type_ = Cls clsIdent}
+    addInstruction $ Call resultReg retType fun (self:argReprs)
     return ExpVal {repr = RegVal resultReg, type_ = retType}
 emitExpr expr = do
     result <- getNextRegistry
@@ -826,20 +823,10 @@ emitFun (FnDef t ident args block) = do
             env <- declare ident actType val
             local (\_ -> env) (declareArgs args)
 
-thisArg :: LatteClass -> Arg
-thisArg cls =  Arg (Cls $ clsIdent cls) thisIdent
-
 emitMethod :: LatteClass -> FnDef -> Eval ()
 emitMethod cls (FnDef retType ident args block) = do
     let name = methodName ident (clsIdent cls)
-    local (updateActCls cls) (emitFun $ FnDef retType (Ident name) ((thisArg cls):args) block)
-    where
-        updateActCls :: LatteClass -> Environment -> Environment
-        updateActCls cls env = Environment {
-            varEnv = varEnv env,
-            funEnv = funEnv env,
-            actClass = Just cls
-        }
+    local (\env -> env {actClass = Just cls}) (emitFun $ FnDef retType (Ident name) args block)
 
 emitTopDef :: TopDef -> Eval ()
 emitTopDef (FnTopDef fun) = emitFun fun
@@ -856,7 +843,7 @@ declareMethod (FnDef retType ident args block) cls = do
     let vtableElem = VtableElem {
         methodIdent = ident,
         pointerName = name,
-        pointerType = Ptr (getType $ FnDef retType ident ((thisArg cls):args) block)
+        pointerType = Ptr (getType $ FnDef retType ident args block)
     }
     updatedVtable <- case Vector.findIndex (\elem -> (methodIdent elem) == ident) (vtable cls) of
         Nothing -> return $ Vector.snoc (vtable cls) (vtableElem)
