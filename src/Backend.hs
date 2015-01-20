@@ -184,7 +184,9 @@ instance Show LatteClass where
             fieldsReprs = printWithSeparator (map (showLLVMType . getType) (Vector.toList $ fields cls)) ","
             vtableType = showLLVMType $ Ptr $ VtableType (clsIdent cls)
         in
-            printf "%s = type { %s , %s }" (showClsRepr cls) vtableType fieldsReprs
+            case fieldsReprs of
+                "" -> printf "%s = type { %s }" (showClsRepr cls) vtableType
+                _ -> printf "%s = type { %s, %s }" (showClsRepr cls) vtableType fieldsReprs
 
 instance Show BinOp where
     show Add = "add"
