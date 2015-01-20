@@ -446,29 +446,22 @@ initFields cls reg =
             addInstruction $ GetElementPtr ptr (Cls $ clsIdent cls) reg index
             addInstruction $ StoreInstr val ptr
 
+setVtable :: Registry -> Type -> ExpVal -> Eval ()
+setVtable objReg objType vtableVal = do
+    vtableReg <- getNextRegistry
+    addInstruction $ GetElementPtr vtableReg objType objReg vtableIndex
+    addInstruction $ StoreInstr vtableVal vtableReg
+
 castExpVal :: (Type, ExpVal) -> Eval ExpVal
 castExpVal (actType, val) = case (actType, type_ val) of
     (Cls cls1, Cls cls2) -> 
         if cls1 /= cls2 then do
             resultReg <- getNextRegistry
             addInstruction $ Bitcast resultReg val actType
-            vtableReg <- getNextRegistry
-            let beforeCastType = Ptr $ VtableType cls2
-            let afterCastType = Ptr $ VtableType cls1
-            let vtableVal = ExpVal {repr = RegVal (vtableName cls2), type_ = beforeCastType}
-            addInstruction $ Bitcast vtableReg vtableVal afterCastType
-            let castedVtableVal = ExpVal {repr = RegVal vtableReg, type_ = afterCastType}
-            setVtable resultReg actType castedVtableVal
             return ExpVal {repr = RegVal resultReg, type_ = actType}
         else
             return val
     _ -> return val
-
-setVtable :: Registry -> Type -> ExpVal -> Eval ()
-setVtable objReg objType vtableVal = do
-    vtableReg <- getNextRegistry
-    addInstruction $ GetElementPtr vtableReg objType objReg vtableIndex
-    addInstruction $ StoreInstr vtableVal vtableReg
 
 getVtableElem :: LatteClass -> Ident -> (Integer, VtableElem)
 getVtableElem cls method =
