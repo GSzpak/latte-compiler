@@ -494,12 +494,6 @@ emitRelOpInstr e1 e2 relOp resultReg = do
     return Bool
 
 emitExprInstruction :: Expr -> Registry -> Eval Type
-emitExprInstruction (EApp ident args) resultReg = do
-    env <- ask
-    let Just (EnvElem name t) = Map.lookup ident (funEnv env)
-    argReprs <- mapM emitExpr args
-    addInstruction $ Call resultReg t name argReprs
-    return t
 emitExprInstruction (Neg expr) resultReg =
     emitExprInstruction (EAdd (ELitInt 0) Minus expr) resultReg
 emitExprInstruction (Not expr) resultReg = do
@@ -613,6 +607,14 @@ emitExpr (ENew ident) = do
     initFields cls objReg
     return ExpVal {repr = RegVal objReg, type_ = pointerType}
 emitExpr (ENull ident) = return ExpVal {repr = NullVal, type_ = Cls ident}
+emitExpr (EApp ident args) = do
+    env <- ask
+    let Just (EnvElem name (Fun retType argTypes)) = Map.lookup ident (funEnv env)
+    argReprs <- mapM emitExpr args
+    castedArgs <-  mapM castExpVal (zip argTypes argReprs)
+    resultReg <- getNextRegistry
+    addInstruction $ Call resultReg retType name castedArgs
+    return $ ExpVal {repr = RegVal resultReg, type_ = retType}
 emitExpr (EMApp objIdent methodId args) = do
     ExpVal (RegVal objReg) (Cls clsIdent) <- emitExpr (EVar objIdent)
     let vtableT = Ptr $ VtableType clsIdent
@@ -897,8 +899,8 @@ createVtables (ClsExtDef ident ancestorIdent fields methods) = do
 
 declareFunctions :: [TopDef] -> Eval Environment
 declareFunctions [] = ask
-declareFunctions ((FnTopDef (FnDef t ident _ _)):defs) = do
-    let envElem = EnvElem (globalName ident) t
+declareFunctions ((FnTopDef fun@(FnDef _ ident _ _)):defs) = do
+    let envElem = EnvElem (globalName ident) (getType fun)
     local (\env -> env {funEnv = Map.insert ident envElem (funEnv env)}) (declareFunctions defs)
 declareFunctions (_:defs) = declareFunctions defs
 
@@ -946,11 +948,11 @@ declareBuiltIn :: Eval Environment
 declareBuiltIn =
     let
         builtIn = 
-            [(Ident "printInt", EnvElem "@printInt" Void),
-            (Ident "printString", EnvElem "@printString" Void),
-            (Ident "error", EnvElem "@error" Void),
-            (Ident "readInt", EnvElem "@readInt" Int),
-            (Ident "readString", EnvElem "@readString" Str)]
+            [(Ident "printInt", EnvElem "@printInt" (Fun Void [Int])),
+            (Ident "printString", EnvElem "@printString" (Fun Void [Str])),
+            (Ident "error", EnvElem "@error" (Fun Void [])),
+            (Ident "readInt", EnvElem "@readInt" (Fun Int [])),
+            (Ident "readString", EnvElem "@readString" (Fun Str[]))]
     in 
         local (\env -> env {funEnv = Map.union (funEnv env) (Map.fromList builtIn)}) ask
 
