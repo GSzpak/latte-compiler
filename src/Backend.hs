@@ -535,6 +535,7 @@ emitExpr (ENew ident) = do
     let pointerType = Cls ident
     addInstruction $ Bitcast resultReg mallocVal pointerType
     setVtable (clsIdent cls) pointerType resultReg
+    initFields cls resultReg
     return ExpVal {repr = RegVal resultReg, type_ = pointerType}
 emitExpr (ENull ident) = return ExpVal {repr = NullVal, type_ = Cls ident}
 emitExpr (EMApp objIdent methodId args) = do
@@ -561,6 +562,18 @@ emitExpr expr = do
     result <- getNextRegistry
     t <- emitExprInstruction expr result
     return $ ExpVal {repr = RegVal result, type_ = t}
+
+initFields :: LatteClass -> Registry -> Eval ()
+initFields cls reg = case ancestor cls of
+    Nothing -> sequence_ $ map (initField reg) (zip [1..] (Vector.toList $ fields cls))
+    Just _ -> sequence_ $ map (initField reg) (zip [2..] (Vector.toList $ fields cls))
+    where
+        initField :: Registry -> (Integer, Field) -> Eval ()
+        initField reg (index, (Field t _)) = do
+            val <- defaultVal t
+            ptr <- getNextRegistry
+            addInstruction $ GetElementPtr ptr (Cls $ clsIdent cls) reg index
+            addInstruction $ StoreInstr val ptr
 
 castArg :: (Type, ExpVal) -> Eval ExpVal
 castArg (actType, val) = do
@@ -625,6 +638,14 @@ emitStoreInstr actType result val =
     else
         addInstruction $ StoreInstr val result
 
+-- TODO: move
+defaultVal :: Type -> Eval ExpVal
+defaultVal t = case t of
+    Int -> return $ numExpVal 0
+    Bool -> return falseExpVal
+    Str -> emitExpr $ EString ""
+    _ -> return ExpVal {repr = NullVal, type_ = t}
+
 emitDeclarations :: Type -> [Item] -> Eval Environment
 emitDeclarations _ [] = ask
 emitDeclarations t (item:items) = case item of
@@ -633,11 +654,7 @@ emitDeclarations t (item:items) = case item of
         env <- declare ident t val
         local (\_ -> env) (emitDeclarations t items))
     NoInit ident -> do
-        val <- case t of
-            Int -> return $ numExpVal 0
-            Bool -> return falseExpVal
-            Str -> emitExpr $ EString ""
-            _ -> return ExpVal {repr = NullVal, type_ = t}
+        val <- defaultVal t
         env <- declare ident t val
         local (\_ -> env) (emitDeclarations t items)
 
