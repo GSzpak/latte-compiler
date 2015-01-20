@@ -20,6 +20,9 @@ instance Typeable Field where
     getType (Field t _) = t
 
 
+name :: Ident -> String
+name (Ident s) = s
+
 getIdent :: Field -> Ident
 getIdent (Field _ ident) = ident
 
