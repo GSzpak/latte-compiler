@@ -184,11 +184,7 @@ instance Show LatteClass where
             fieldsReprs = printWithSeparator (map (showLLVMType . getType) (Vector.toList $ fields cls)) ","
             vtableType = showLLVMType $ Ptr $ VtableType (clsIdent cls)
         in
-            case ancestor cls of
-                Nothing -> 
-                    printf "%s = type { %s , %s }" (showClsRepr cls) vtableType fieldsReprs
-                Just ancestorCls -> 
-                    printf "%s = type { %s , %s, %s }" (showClsRepr cls) vtableType (showClsRepr ancestorCls) fieldsReprs
+            printf "%s = type { %s , %s }" (showClsRepr cls) vtableType fieldsReprs
 
 instance Show BinOp where
     show Add = "add"
@@ -243,7 +239,30 @@ instance Show Instruction where
     show (Bitcast resultReg val t) =
         printf "%s = bitcast %s to %s" resultReg (show val) (showLLVMType t)
 
---------------------------------------------------------------------------
+showVtableType :: Vtable -> Ident -> String
+showVtableType vtable ident =
+    let
+        funTypes = printWithSeparator (map (showLLVMType . pointerType) (Vector.toList vtable)) ","
+    in 
+        printf "%s = type { %s }" (showLLVMType $ VtableType ident) funTypes
+
+showVtable :: Vtable -> Ident -> String
+showVtable vtable ident = 
+    let
+        vtableElems = printWithSeparator (map show (Vector.toList vtable)) ","
+    in
+        printf "%s = internal constant %s { %s }" (vtableName ident) (showLLVMType $ VtableType ident) vtableElems
+
+showLLVMArgs :: [Arg] -> String
+showLLVMArgs args = printWithSeparator (map showLLVMArg args) ","
+    where
+        showLLVMArg :: Arg -> String
+        showLLVMArg (Arg type_ ident) = printf "%s %s" (showLLVMType type_) (identReg ident)
+
+------------------------ utils ----------------------------------------------
+
+instance Typeable LatteClass where
+    getType cls = Cls (clsIdent cls)
 
 emptyEnv :: Environment
 emptyEnv = Environment {
@@ -284,6 +303,13 @@ trueExpVal = boolExpVal True
 
 falseExpVal :: ExpVal
 falseExpVal = boolExpVal False
+
+defaultVal :: Type -> Eval ExpVal
+defaultVal t = case t of
+    Int -> return $ numExpVal 0
+    Bool -> return falseExpVal
+    Str -> emitExpr $ EString ""
+    _ -> return ExpVal {repr = NullVal, type_ = t}
 
 getNextRegistry :: Eval Registry
 getNextRegistry = do
@@ -363,6 +389,92 @@ addNewLLVMBlock = do
     }
     return next
 
+debug :: Show a => a -> Eval ()
+debug x = liftIO $ putStrLn $ show x
+
+------------------- class utils -------------------------------------------
+
+vtableIndex :: Integer
+vtableIndex = 0
+
+getSize :: Type -> Integer
+getSize Str = getSize $ Ptr Char
+getSize Int = 4
+getSize Bool = 1
+getSize Char = 1
+getSize (Cls ident) = getSize $ Ptr $ Cls ident
+getSize (Ptr _) = 8
+
+getClassSize :: LatteClass -> Integer
+getClassSize cls =
+    let
+        vptrSize = getSize $ Ptr $ VtableType (clsIdent cls)
+        fieldsSize = Vector.sum $ Vector.map (getSize . getType) (fields cls)
+    in 
+        vptrSize + fieldsSize
+
+getClass :: Ident -> Eval LatteClass
+getClass ident = do
+    store <- get
+    let Just cls = Map.lookup ident (classes store)
+    return cls
+
+-- Assumes that field of given ident is declared in current class
+getActClassField :: Ident -> Eval (Registry, Type)
+getActClassField fieldIdent = do
+    env <- ask
+    let Just actCls = actClass env
+    let Just index = Vector.findIndex (\f -> (getIdent f) == fieldIdent) (fields actCls)
+    let field = (fields actCls) Vector.! index
+    let ptrIndex = toInteger $ index + 1
+    selfVal <- emitExpr (EVar selfIdent)
+    let RegVal objReg = repr selfVal
+    resultReg <- getNextRegistry
+    addInstruction $ GetElementPtr resultReg (getType actCls) objReg ptrIndex
+    return (resultReg, (getType field))
+
+initFields :: LatteClass -> Registry -> Eval ()
+initFields cls reg = 
+    sequence_ $ map (initField reg) (zip [1..] (Vector.toList $ fields cls))
+    where
+        initField :: Registry -> (Integer, Field) -> Eval ()
+        initField reg (index, (Field t _)) = do
+            val <- defaultVal t
+            ptr <- getNextRegistry
+            addInstruction $ GetElementPtr ptr (Cls $ clsIdent cls) reg index
+            addInstruction $ StoreInstr val ptr
+
+castExpVal :: (Type, ExpVal) -> Eval ExpVal
+castExpVal (actType, val) = case (actType, type_ val) of
+    (Cls cls1, Cls cls2) -> 
+        if cls1 /= cls2 then do
+            resultReg <- getNextRegistry
+            addInstruction $ Bitcast resultReg val actType
+            vtableReg <- getNextRegistry
+            let beforeCastType = Ptr $ VtableType cls2
+            let afterCastType = Ptr $ VtableType cls1
+            let vtableVal = ExpVal {repr = RegVal (vtableName cls2), type_ = beforeCastType}
+            addInstruction $ Bitcast vtableReg vtableVal afterCastType
+            let castedVtableVal = ExpVal {repr = RegVal vtableReg, type_ = afterCastType}
+            setVtable resultReg actType castedVtableVal
+            return ExpVal {repr = RegVal resultReg, type_ = actType}
+        else
+            return val
+    _ -> return val
+
+setVtable :: Registry -> Type -> ExpVal -> Eval ()
+setVtable objReg objType vtableVal = do
+    vtableReg <- getNextRegistry
+    addInstruction $ GetElementPtr vtableReg objType objReg vtableIndex
+    addInstruction $ StoreInstr vtableVal vtableReg
+
+getVtableElem :: LatteClass -> Ident -> (Integer, VtableElem)
+getVtableElem cls method =
+    let
+        Just index = Vector.findIndex (\elem -> (methodIdent elem) == method) (vtable cls)
+    in
+        (toInteger index, (vtable cls) Vector.! index)
+
 -------------- expressions ------------------------------------
 
 emitBinOpInstr :: Expr -> Expr -> BinOp -> Registry -> Eval Type
@@ -427,46 +539,6 @@ getStringName s = do
             }
             return name
 
-getClass :: Ident -> Eval LatteClass
-getClass ident = do
-    store <- get
-    let Just cls = Map.lookup ident (classes store)
-    return cls
-
-getClassWithField :: Ident -> LatteClass -> Eval (LatteClass, Int)
-getClassWithField fieldIdent cls = do
-    case Vector.findIndex (\f -> (getIdent f) == fieldIdent) (fields cls) of
-        Just index -> return (cls, index)
-        Nothing -> do
-            -- Program was accepted by frontend, therefore field must be inherited
-            let Just ancestorCls = ancestor cls
-            getClassWithField fieldIdent ancestorCls
-
-emitGetField :: LatteClass -> Int -> Registry -> Type -> Eval (Registry, Type)
-emitGetField cls index objReg objType = do
-    let field = (fields cls) Vector.! index
-    ptrIndex <- case ancestor cls of
-        Nothing -> return $ toInteger $ index + 1
-        Just _ -> return $ toInteger $ index + 2
-    resultReg <- getNextRegistry
-    addInstruction $ GetElementPtr resultReg (Cls $ clsIdent cls) objReg ptrIndex
-    return (resultReg, (getType field))
-
-getActClassField :: Ident -> Eval (Registry, Type)
-getActClassField fieldIdent = do
-    env <- ask
-    let Just actCls = actClass env
-    (clsWithField, index) <- getClassWithField fieldIdent actCls
-    selfVal <- emitExpr (EVar selfIdent)
-    if (clsIdent actCls) /= (clsIdent clsWithField) then do
-        bitcastReg <- getNextRegistry
-        let clsType = Cls $ clsIdent clsWithField
-        addInstruction $ Bitcast bitcastReg selfVal clsType
-        emitGetField clsWithField index bitcastReg clsType
-    else do
-        let RegVal reg = repr selfVal
-        emitGetField clsWithField index reg (type_ selfVal)
-
 getIdentReg :: Ident -> Eval (Registry, Type)
 getIdentReg ident = do
     env <- ask
@@ -527,16 +599,17 @@ emitExpr (EVar ident) = do
     return $ ExpVal {repr = RegVal resultReg, type_ = t}
 emitExpr (ENew ident) = do
     cls <- getClass ident
-    let size = getSize cls
+    let size = getClassSize cls
     mallocResult <- getNextRegistry
     addInstruction $ Call mallocResult (Ptr $ Char) (globalName $ Ident "malloc") [numExpVal size]
     let mallocVal = ExpVal {repr = RegVal mallocResult, type_ = Ptr Char}
-    resultReg <- getNextRegistry
+    objReg <- getNextRegistry
     let pointerType = Cls ident
-    addInstruction $ Bitcast resultReg mallocVal pointerType
-    setVtable (clsIdent cls) pointerType resultReg
-    initFields cls resultReg
-    return ExpVal {repr = RegVal resultReg, type_ = pointerType}
+    addInstruction $ Bitcast objReg mallocVal pointerType
+    let vtableVal = ExpVal {repr = RegVal (vtableName ident), type_ = (Ptr $ VtableType ident)}
+    setVtable objReg pointerType vtableVal
+    initFields cls objReg
+    return ExpVal {repr = RegVal objReg, type_ = pointerType}
 emitExpr (ENull ident) = return ExpVal {repr = NullVal, type_ = Cls ident}
 emitExpr (EMApp objIdent methodId args) = do
     ExpVal (RegVal objReg) (Cls clsIdent) <- emitExpr (EVar objIdent)
@@ -554,7 +627,7 @@ emitExpr (EMApp objIdent methodId args) = do
     addInstruction $ Load fun (pointerType vtableElem) funPointer
     argReprs <- mapM emitExpr args
     let self = ExpVal {repr = RegVal objReg, type_ = Cls clsIdent}
-    castedArgs <- mapM castArg (zip argTypes (self:argReprs))
+    castedArgs <- mapM castExpVal (zip argTypes (self:argReprs))
     resultReg <- getNextRegistry
     addInstruction $ Call resultReg retType fun castedArgs
     return ExpVal {repr = RegVal resultReg, type_ = retType}
@@ -563,61 +636,6 @@ emitExpr expr = do
     t <- emitExprInstruction expr result
     return $ ExpVal {repr = RegVal result, type_ = t}
 
-initFields :: LatteClass -> Registry -> Eval ()
-initFields cls reg = case ancestor cls of
-    Nothing -> sequence_ $ map (initField reg) (zip [1..] (Vector.toList $ fields cls))
-    Just _ -> sequence_ $ map (initField reg) (zip [2..] (Vector.toList $ fields cls))
-    where
-        initField :: Registry -> (Integer, Field) -> Eval ()
-        initField reg (index, (Field t _)) = do
-            val <- defaultVal t
-            ptr <- getNextRegistry
-            addInstruction $ GetElementPtr ptr (Cls $ clsIdent cls) reg index
-            addInstruction $ StoreInstr val ptr
-
-castArg :: (Type, ExpVal) -> Eval ExpVal
-castArg (actType, val) = do
-    if actType == type_ val then
-        return val
-    else do
-        resultReg <- getNextRegistry
-        addInstruction $ Bitcast resultReg val actType
-        return ExpVal {repr = RegVal resultReg, type_ = actType}
-
-setVtable :: Ident -> Type -> Registry -> Eval ()
-setVtable clsIdent pointerType pointerReg = do
-    vtableReg <- getNextRegistry
-    addInstruction $ GetElementPtr vtableReg pointerType pointerReg vtableIndex
-    let vtableVal = ExpVal {repr = RegVal (vtableName clsIdent), type_ = (Ptr $ VtableType clsIdent)}
-    addInstruction $ StoreInstr vtableVal vtableReg
-
-getVtableElem :: LatteClass -> Ident -> (Integer, VtableElem)
-getVtableElem cls method =
-    let
-        Just index = Vector.findIndex (\elem -> (methodIdent elem) == method) (vtable cls)
-    in
-        (toInteger index, (vtable cls) Vector.! index)
-
-vtableIndex :: Integer
-vtableIndex = 0
-
-addrSize :: Integer
-addrSize = 8
-
-numOfFields :: LatteClass -> Integer
-numOfFields cls = toInteger $ Set.size $ getAllFields cls
-    where
-        fieldsSet :: LatteClass -> Set.Set Ident
-        fieldsSet cls = Set.fromList $ map getIdent (Vector.toList $ fields cls)
-        getAllFields :: LatteClass -> Set.Set Ident
-        getAllFields cls = case (ancestor cls) of
-            Nothing -> fieldsSet cls
-            Just ancestorCls -> Set.union (fieldsSet cls) (getAllFields ancestorCls)
-
--- TODO: move to utils
-getSize :: LatteClass -> Integer
-getSize cls = addrSize * ((numOfFields cls) + 1)
-
 ----------- statements ------------------------------------------------
 
 declare :: Ident -> Type -> ExpVal -> Eval Environment
@@ -625,26 +643,9 @@ declare ident actType val = do
     env <- ask
     reg <- getNextRegistry
     addInstruction $ Alloca reg actType
-    emitStoreInstr actType reg val
+    castedVal <- castExpVal (actType, val)
+    addInstruction $ StoreInstr castedVal reg
     return $ env {varEnv = Map.insert ident (EnvElem reg actType) (varEnv env)}
-
-emitStoreInstr :: Type -> Registry -> ExpVal -> Eval ()
-emitStoreInstr actType result val =
-    if actType /= type_ val then do
-        bitcastReg <- getNextRegistry
-        addInstruction $ Bitcast bitcastReg val actType 
-        let newVal = ExpVal {repr = RegVal bitcastReg, type_ = actType}
-        addInstruction $ StoreInstr newVal result
-    else
-        addInstruction $ StoreInstr val result
-
--- TODO: move
-defaultVal :: Type -> Eval ExpVal
-defaultVal t = case t of
-    Int -> return $ numExpVal 0
-    Bool -> return falseExpVal
-    Str -> emitExpr $ EString ""
-    _ -> return ExpVal {repr = NullVal, type_ = t}
 
 emitDeclarations :: Type -> [Item] -> Eval Environment
 emitDeclarations _ [] = ask
@@ -674,9 +675,6 @@ emitCondExpr expr actBlock trueBlock falseBlock = do
     setLastInstruction $ CondJump val trueBlock falseBlock 
     setActBlockNum newestBlock
 
-debug :: Show a => a -> Eval ()
-debug x = liftIO $ putStrLn $ show x
-
 emitStmt :: Stmt -> Eval Environment
 emitStmt Empty = ask
 emitStmt (BStmt block) = do
@@ -686,7 +684,8 @@ emitStmt (Ass ident expr) = do
     env <- ask
     val <- emitExpr expr
     (reg, actType) <- getIdentReg ident
-    emitStoreInstr actType reg val
+    castedVal <- castExpVal (actType, val)
+    addInstruction $ StoreInstr castedVal reg
     ask
 emitStmt (Decl type_ items) = emitDeclarations type_ items
 emitStmt (Incr ident) =
@@ -766,17 +765,18 @@ emitBlock :: Block -> Eval Environment
 emitBlock (Block stmts) = do
     emitStmts stmts
 
+---------------------- declarations, compiling instructions ---------------
+
 addCompiled :: [String] -> Eval ()
 addCompiled compiledInstructions =  do
     store <- get
     put $ store {compiled = compiledInstructions ++ (compiled store)}
 
-showLLVMArgs :: [Arg] -> String
-showLLVMArgs args = printWithSeparator (map showLLVMArg args) ","
-    where
-        showLLVMArg :: Arg -> String
-        showLLVMArg (Arg type_ ident) = printf "%s %s" (showLLVMType type_) (identReg ident)
-
+reverseInstructions :: Eval ()
+reverseInstructions = do
+    store <- get
+    put $ store {compiled = reverse (compiled store)}
+ 
 compileBlock :: LLVMBlock -> [String]
 compileBlock block = ["", formatInstr $ lastInstruction] ++ (map formatInstr (instructions block))
     where
@@ -809,29 +809,6 @@ compileBlocksInstructions = do
         formatLabel :: BlockNum -> String
         formatLabel labelNum = printf "   %s:" (label labelNum)
 
-addArgs :: [Arg] -> Eval Environment
-addArgs [] = ask
-addArgs ((Arg type_ ident):args) = do
-    local (\env -> env {varEnv = Map.insert ident (EnvElem (identReg ident) type_) (varEnv env)}) (addArgs args)
-
-createNewCls :: Ident -> [Field] -> Maybe LatteClass -> Eval LatteClass
-createNewCls clsIdent fields ancestor = do
-    clsVtable <- case ancestor of
-        Nothing -> return Vector.empty
-        Just ancestorCls -> return (vtable ancestorCls)
-    let cls = LatteClass {
-        clsIdent = clsIdent,
-        fields = Vector.fromList fields,
-        ancestor = ancestor,
-        vtable = clsVtable
-    }
-    return cls
-
-updateCls :: Ident -> LatteClass -> Eval ()
-updateCls ident cls = do
-    store <- get
-    put $ store {classes = Map.insert ident cls (classes store)}
-
 emitFun :: FnDef -> Eval ()
 emitFun (FnDef t ident args block) = do
     let funHeader = printf "define %s %s(%s) {" (showLLVMType t) (globalName ident) (showLLVMArgs args)
@@ -849,6 +826,27 @@ emitFun (FnDef t ident args block) = do
             let val = ExpVal {repr = RegVal reg, type_ = actType}
             env <- declare ident actType val
             local (\_ -> env) (declareArgs args)
+
+createNewCls :: Ident -> [Field] -> Maybe LatteClass -> Eval LatteClass
+createNewCls clsIdent fieldList ancestor = do
+    let fieldsVector = Vector.fromList fieldList
+    (clsVtable, clsFields) <- case ancestor of
+        Nothing -> 
+            return (Vector.empty, fieldsVector)
+        Just ancestorCls -> 
+            return ((vtable ancestorCls), ((fields ancestorCls) Vector.++ fieldsVector))
+    let cls = LatteClass {
+        clsIdent = clsIdent,
+        fields = clsFields,
+        ancestor = ancestor,
+        vtable = clsVtable
+    }
+    return cls
+
+updateCls :: Ident -> LatteClass -> Eval ()
+updateCls ident cls = do
+    store <- get
+    put $ store {classes = Map.insert ident cls (classes store)}
 
 emitMethod :: LatteClass -> FnDef -> Eval ()
 emitMethod cls (FnDef retType ident args block) = do
@@ -902,37 +900,6 @@ declareFunctions ((FnTopDef (FnDef t ident _ _)):defs) = do
     local (\env -> env {funEnv = Map.insert ident envElem (funEnv env)}) (declareFunctions defs)
 declareFunctions (_:defs) = declareFunctions defs
 
-reverseInstructions :: Eval ()
-reverseInstructions = do
-    store <- get
-    put $ store {compiled = reverse (compiled store)}
- 
-addOuterDeclarations :: Eval ()
-addOuterDeclarations = addCompiled $ map show declarations
-    where
-        declarations =
-            [FunDecl "printInt" Void [Int],
-            FunDecl "printString" Void [Str],
-            FunDecl "error" Void [],
-            FunDecl "readInt" Int [],
-            FunDecl "readString" Str [],
-            FunDecl "concat_" Str [Str, Str],
-            FunDecl "malloc" (Ptr Char) [Int]]
-
-showVtableType :: Vtable -> Ident -> String
-showVtableType vtable ident =
-    let
-        funTypes = printWithSeparator (map (showLLVMType . pointerType) (Vector.toList vtable)) ","
-    in 
-        printf "%s = type { %s }" (showLLVMType $ VtableType ident) funTypes
-
-showVtable :: Vtable -> Ident -> String
-showVtable vtable ident = 
-    let
-        vtableElems = printWithSeparator (map show (Vector.toList vtable)) ","
-    in
-        printf "%s = internal constant %s { %s }" (vtableName ident) (showLLVMType $ VtableType ident) vtableElems
-
 addClsDecl :: LatteClass -> Eval ()
 addClsDecl cls = do
     let vtableTypeRepr = showVtableType (vtable cls) (clsIdent cls)
@@ -944,6 +911,18 @@ addClassDeclarations :: Eval ()
 addClassDeclarations = do
     store <- get
     sequence_ $ map addClsDecl (snd $ unzip $ Map.toList $ classes store)
+
+addOuterDeclarations :: Eval ()
+addOuterDeclarations = addCompiled $ map show declarations
+    where
+        declarations =
+            [FunDecl "printInt" Void [Int],
+            FunDecl "printString" Void [Str],
+            FunDecl "error" Void [],
+            FunDecl "readInt" Int [],
+            FunDecl "readString" Str [],
+            FunDecl "concat_" Str [Str, Str],
+            FunDecl "malloc" (Ptr Char) [Int]]
 
 addStringsDefinitions :: Eval ()
 addStringsDefinitions = do
