@@ -59,7 +59,7 @@ data Type =
  | Fun Type [Type]
  | Char
  | Ptr Type
- | Arr Integer Type
+ | Arr Type Integer
  | VtableType Ident
   deriving (Eq,Ord,Show)
 

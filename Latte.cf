@@ -80,6 +80,10 @@ internal   Char. Type ::= "Char" ;
 
 internal   Ptr. Type ::= Type "*" ;
 
+internal   Arr. Type ::= Type "[" Integer "]" ;
+
+internal   VtableType. Type ::= Ident ;
+
 separator  Type "," ;
 
 -- Expressions ---------------------------------------------

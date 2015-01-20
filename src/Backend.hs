@@ -145,7 +145,7 @@ showLLVMType Void = "void"
 showLLVMType Char = "i8"
 showLLVMType (Cls ident) = printf "%s*" (classRepr ident)
 showLLVMType (Ptr t) = printf "%s*" (showLLVMType t)
-showLLVMType (Arr len t) = printf "[%s x %s]" (show len) (showLLVMType t)
+showLLVMType (Arr t len) = printf "[%s x %s]" (show len) (showLLVMType t)
 showLLVMType (Fun retType argTypes) =
     printf "%s (%s)" (showLLVMType retType) (printWithSeparator (map showLLVMType argTypes) ",")
 showLLVMType (VtableType (Ident id)) = "%class." ++ (printf "%s.vtableType" id)
@@ -542,7 +542,7 @@ emitExpr ELitFalse = return $ boolExpVal False
 emitExpr (EString s) = do
     name <- getStringName s
     registry <- getNextRegistry
-    addInstruction $ GetElementPtr registry (Ptr $ Arr (llvmStrLen s) Char) name 0
+    addInstruction $ GetElementPtr registry (Ptr $ Arr Char (llvmStrLen s)) name 0
     return $ ExpVal {repr = RegVal registry, type_ = Str}
 emitExpr (EAdd expr1 Plus expr2) = do
     val1 <- emitExpr expr1 

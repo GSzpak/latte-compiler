@@ -166,6 +166,8 @@ instance Print Type where
    Fun type' types -> prPrec i 0 (concatD [prt 0 type' , doc (showString "(") , prt 0 types , doc (showString ")")])
    Char  -> prPrec i 0 (concatD [doc (showString "Char")])
    Ptr type' -> prPrec i 0 (concatD [prt 0 type' , doc (showString "*")])
+   Arr type' n -> prPrec i 0 (concatD [prt 0 type' , doc (showString "[") , prt 0 n , doc (showString "]")])
+   VtableType id -> prPrec i 0 (concatD [prt 0 id])
 
   prtList es = case es of
    [] -> (concatD [])
