@@ -490,28 +490,27 @@ declareBuiltIn =
     in 
         local (\env -> env {funEnv = Map.union (funEnv env) (Map.fromList builtIn)}) ask
 
-declareFields :: [Field] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
-declareFields [] accu = return accu
-declareFields ((Field t ident):fields) accu =
-    case Map.lookup ident accu of
-        Nothing -> declareFields fields (Map.insert ident t accu)
-        Just _ -> throwError $ duplicatedErr "field" ident
-
-declareMethods :: [FnDef] -> TypeEnv EnvElem -> Eval (TypeEnv EnvElem)
-declareMethods [] accu = return accu
-declareMethods ((FnDef t ident args _):methods) accu = do
-    let argTypes = map getType args
-    case Map.lookup ident accu of
-        Nothing -> declareMethods methods (Map.insert ident (Fun t argTypes) accu)
-        Just _ -> throwError $ duplicatedErr "method" ident
+checkForDuplicates :: [Ident] -> String -> Eval ()
+checkForDuplicates [] _ = return ()
+checkForDuplicates (ident:idents) typeName =
+    if ident `elem` idents then
+        throwError $ duplicatedErr typeName ident
+    else
+        checkForDuplicates idents typeName
 
 declareCls :: Ident -> Maybe ClassEnvElem -> [Field] -> [FnDef] -> Eval Env
 declareCls ident ancestor fieldList methodList = do
-    (fieldsAccu, methodsAccu) <- case ancestor of
+    (ancestorFields, ancestorMethods) <- case ancestor of
         Nothing -> return (Map.empty, Map.empty)
-        Just cls -> return (fields cls, methods cls) 
-    clsFields <- declareFields fieldList fieldsAccu
-    clsMethods <- declareMethods methodList methodsAccu
+        Just cls -> return (fields cls, methods cls)
+    let fieldIdents = map getIdent fieldList
+    let methodIdents = map (\(FnDef _ ident _ _) -> ident) methodList
+    checkForDuplicates fieldIdents "field"
+    checkForDuplicates methodIdents "method"
+    let actFields = Map.fromList (map (\(Field t ident) -> (ident, t)) fieldList)
+    let actMethods = Map.fromList (map (\fun@(FnDef _ ident _ _) -> (ident, getType fun)) methodList)
+    let clsFields = Map.union actFields ancestorFields
+    let clsMethods = Map.union actMethods ancestorMethods
     local (addCls clsFields clsMethods) ask
     where
         addCls :: TypeEnv EnvElem -> TypeEnv EnvElem -> Env -> Env
