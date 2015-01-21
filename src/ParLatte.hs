@@ -684,7 +684,7 @@ happyReduce_43 = happySpecReduce_1  17# happyReduction_43
 happyReduction_43 happy_x_1
 	 =  case happyOut4 happy_x_1 of { happy_var_1 -> 
 	happyIn21
-		 (Cls happy_var_1
+		 (ClsType happy_var_1
 	)}
 
 happyReduce_44 = happySpecReduce_0  18# happyReduction_44

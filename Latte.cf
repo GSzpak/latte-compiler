@@ -72,7 +72,7 @@ Bool.      Type ::= "boolean" ;
 
 Void.      Type ::= "void" ;
 
-Cls.       Type ::= Ident ;
+ClsType.   Type ::= Ident ;
 
 internal   Fun. Type ::= Type "(" [Type] ")" ;
 

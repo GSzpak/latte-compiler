@@ -30,4 +30,4 @@ selfIdent :: Ident
 selfIdent = Ident "self"
 
 selfArg :: Ident -> Arg
-selfArg clsIdent =  Arg (Cls clsIdent) selfIdent
+selfArg clsIdent =  Arg (ClsType clsIdent) selfIdent

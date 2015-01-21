@@ -108,7 +108,7 @@ incBlockDepth :: Env -> Env
 incBlockDepth env = env {actBlockDepth = (actBlockDepth env) + 1}
 
 isType :: Type -> Type -> Eval Bool
-isType (Cls ident1) (Cls ident2) = do
+isType (ClsType ident1) (ClsType ident2) = do
     env <- ask
     if ident1 == ident2 then
         return True
@@ -116,7 +116,7 @@ isType (Cls ident1) (Cls ident2) = do
         let Just cls = Map.lookup ident1 (classEnv env)
         case ancestor cls of
             Nothing -> return False
-            Just ancestor -> isType (Cls $ clsIdent ancestor) (Cls ident2)
+            Just ancestor -> isType (ClsType $ clsIdent ancestor) (ClsType ident2)
 isType t1 t2 = return $ t1 == t2
 
 checkTypes :: Type -> Type -> Eval Type
@@ -152,7 +152,7 @@ checkPrivateField clsId fieldId = do
     case actClass env of
         Nothing -> throwError $ privateFieldErr fieldId clsId
         Just actCls -> do
-            accepted <- isType (Cls clsId) (Cls $ clsIdent actCls)
+            accepted <- isType (ClsType clsId) (ClsType $ clsIdent actCls)
             if accepted then
                 return ()
             else
@@ -234,14 +234,14 @@ evalExprType (EApp ident arguments) = do
     evalFunType ident t argTypes arguments
 evalExprType (ENew ident) = do
     getExistingCls ident
-    return $ Cls ident
+    return $ ClsType ident
 evalExprType (ENull ident) = do
     getExistingCls ident
-    return $ Cls ident
+    return $ ClsType ident
 evalExprType (EMApp objIdent methodIdent arguments) = do
     identType <- evalExprType (EVar objIdent)
     case identType of
-        Cls clsIdent -> (do
+        ClsType clsIdent -> (do
             cls <- getExistingCls clsIdent
             case Map.lookup methodIdent (methods cls) of
                     Nothing -> throwError $ undeclaredClassComponentErr "method" methodIdent clsIdent
@@ -250,7 +250,7 @@ evalExprType (EMApp objIdent methodIdent arguments) = do
 evalExprType (EAcc objIdent fieldIdent) = do
     objType <- evalExprType (EVar objIdent)
     case objType of
-        Cls clsIdent -> (do
+        ClsType clsIdent -> (do
             checkPrivateField clsIdent fieldIdent
             getFieldType clsIdent fieldIdent)
         t -> throwError $ unexpectedTypeErr t
@@ -596,7 +596,7 @@ hasReturn (BStmt (Block stmts)) = any hasReturn stmts
 hasReturn _ = False
 
 checkIfTypeDeclared ::  Type -> Eval ()
-checkIfTypeDeclared (Cls ident) = do
+checkIfTypeDeclared (ClsType ident) = do
     _ <- getExistingCls ident
     return ()
 checkIfTypeDeclared _ = return ()

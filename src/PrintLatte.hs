@@ -162,7 +162,7 @@ instance Print Type where
    Str  -> prPrec i 0 (concatD [doc (showString "string")])
    Bool  -> prPrec i 0 (concatD [doc (showString "boolean")])
    Void  -> prPrec i 0 (concatD [doc (showString "void")])
-   Cls id -> prPrec i 0 (concatD [prt 0 id])
+   ClsType id -> prPrec i 0 (concatD [prt 0 id])
    Fun type' types -> prPrec i 0 (concatD [prt 0 type' , doc (showString "(") , prt 0 types , doc (showString ")")])
    Char  -> prPrec i 0 (concatD [doc (showString "Char")])
    Ptr type' -> prPrec i 0 (concatD [prt 0 type' , doc (showString "*")])

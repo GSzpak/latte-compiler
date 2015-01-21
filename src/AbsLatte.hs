@@ -55,7 +55,7 @@ data Type =
  | Str
  | Bool
  | Void
- | Cls Ident
+ | ClsType Ident
  | Fun Type [Type]
  | Char
  | Ptr Type
