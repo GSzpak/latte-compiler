@@ -57,7 +57,8 @@ type Env = Map.Map Ident EnvElem
 data Environment = Environment {
     varEnv :: Env,
     funEnv :: Env,
-    actClass :: Maybe LatteClass
+    actClass :: Maybe LatteClass,
+    actReturnType :: Type
 } deriving Show
 
 data Store = Store {
@@ -270,7 +271,8 @@ emptyEnv :: Environment
 emptyEnv = Environment {
     varEnv = Map.empty,
     funEnv = Map.empty,
-    actClass = Nothing
+    actClass = Nothing,
+    actReturnType = Void
 }
 
 emptyStore :: Store
@@ -476,6 +478,32 @@ getVtableElem cls method =
 
 -------------- expressions ------------------------------------
 
+getStringName :: String -> Eval Name
+getStringName s = do
+    store <- get
+    case Map.lookup s (strConstants store) of
+        Just name -> return name
+        Nothing -> do
+            let name = constName (constCounter store)
+            put $ store {
+                constCounter = (constCounter store) + 1,
+                strConstants = Map.insert s name (strConstants store)
+            }
+            return name
+
+getIdentReg :: Ident -> Eval (Registry, Type)
+getIdentReg ident = do
+    env <- ask
+    case Map.lookup ident (varEnv env) of
+        Nothing -> getActClassField ident
+        Just (EnvElem reg t) -> return (reg, t)
+
+getExprReg :: Expr -> Eval (Registry, Type)
+getExprReg (EVar ident) = getIdentReg ident
+getExprReg (EAcc objIdent fieldIdent) = do
+    objVal <- emitExpr (EVar objIdent)
+    getClassField fieldIdent objVal
+
 emitBinOpInstr :: Expr -> Expr -> BinOp -> Registry -> Eval Type
 emitBinOpInstr e1 e2 operator resultReg = do
     val1 <- emitExpr e1
@@ -518,32 +546,6 @@ emitExprInstruction (ERel expr1 EQU expr2) resultReg =
     emitRelOpInstr expr1 expr2 EQU resultReg 
 emitExprInstruction (ERel expr1 NE expr2) resultReg =
     emitRelOpInstr expr1 expr2 NE resultReg
-
-getStringName :: String -> Eval Name
-getStringName s = do
-    store <- get
-    case Map.lookup s (strConstants store) of
-        Just name -> return name
-        Nothing -> do
-            let name = constName (constCounter store)
-            put $ store {
-                constCounter = (constCounter store) + 1,
-                strConstants = Map.insert s name (strConstants store)
-            }
-            return name
-
-getIdentReg :: Ident -> Eval (Registry, Type)
-getIdentReg ident = do
-    env <- ask
-    case Map.lookup ident (varEnv env) of
-        Nothing -> getActClassField ident
-        Just (EnvElem reg t) -> return (reg, t)
-
-getExprReg :: Expr -> Eval (Registry, Type)
-getExprReg (EVar ident) = getIdentReg ident
-getExprReg (EAcc objIdent fieldIdent) = do
-    objVal <- emitExpr (EVar objIdent)
-    getClassField fieldIdent objVal
 
 emitExpr :: Expr -> Eval ExpVal
 emitExpr (ELitInt n) = return $ numExpVal n
@@ -704,8 +706,10 @@ emitStmt (Incr expr) =
 emitStmt (Decr expr) =
     emitStmt $ Ass expr (EAdd expr Minus (ELitInt 1))
 emitStmt (Ret expr) = do
+    env <- ask
     val <- emitExpr expr
-    setLastInstruction $ ExpRet val
+    castedVal <- castExpVal ((actReturnType env), val)
+    setLastInstruction $ ExpRet castedVal
     ask
 emitStmt VRet = do
     setLastInstruction VoidRet
@@ -821,12 +825,12 @@ compileBlocksInstructions = do
         formatLabel labelNum = printf "   %s:" (label labelNum)
 
 emitFun :: FnDef -> Eval ()
-emitFun (FnDef t ident args block) = do
-    let funHeader = printf "define %s %s(%s) {" (showLLVMType t) (globalName ident) (showLLVMArgs args)
+emitFun (FnDef retType ident args block) = do
+    let funHeader = printf "define %s %s(%s) {" (showLLVMType retType) (globalName ident) (showLLVMArgs args)
     addCompiled [funHeader]
     addNewLLVMBlock
     env <- declareArgs args
-    local (\_ -> env) (emitBlock block)
+    local (\_ -> env {actReturnType = retType}) (emitBlock block)
     compileBlocksInstructions
     addCompiled ["", "}"]
     where
@@ -861,8 +865,8 @@ updateCls ident cls = do
 
 emitMethod :: LatteClass -> FnDef -> Eval ()
 emitMethod cls (FnDef retType ident args block) = do
-    let name = methodName ident (clsIdent cls)
-    local (\env -> env {actClass = Just cls}) (emitFun $ FnDef retType (Ident name) args block)
+    let method = FnDef retType (Ident $ methodName ident $ clsIdent cls) args block
+    local (\env -> env {actClass = Just cls, actReturnType = retType}) (emitFun method)
 
 emitTopDef :: TopDef -> Eval ()
 emitTopDef (FnTopDef fun) = emitFun fun

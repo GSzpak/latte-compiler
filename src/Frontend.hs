@@ -41,6 +41,7 @@ data Env = Env {
     funEnv :: FunEnv,
     classEnv :: ClassEnv,
     actBlockDepth :: BlockDepth,
+    actClass :: Maybe ClassEnvElem,
     actReturnType :: Type
 } deriving Show
 
@@ -81,6 +82,10 @@ undeclaredClassComponentErr s componentIdent clsIdent =
 unexpectedExprErr :: Expr -> String
 unexpectedExprErr expr = printf "Unexpected expression: %s" (printTree expr)
 
+privateFieldErr :: Ident -> Ident -> String
+privateFieldErr fieldId clsId =
+    printf "Attempt to access private field: %s in class: %s" (name fieldId) (name clsId)
+
 ------------------------- utils --------------------------------------------
 
 runEval :: Env -> Eval a -> IO (Either String a)
@@ -92,6 +97,7 @@ emptyEnv = Env {
     funEnv = Map.empty,
     classEnv = Map.empty,
     actBlockDepth = 0,
+    actClass = Nothing,
     actReturnType = Void
 }
 
@@ -139,6 +145,18 @@ getCls :: Ident -> Eval (Maybe ClassEnvElem)
 getCls ident = do
     env <- ask
     return $ Map.lookup ident (classEnv env)
+
+checkPrivateField :: Ident -> Ident -> Eval ()
+checkPrivateField clsId fieldId = do
+    env <- ask
+    case actClass env of
+        Nothing -> throwError $ privateFieldErr fieldId clsId
+        Just actCls -> do
+            accepted <- isType (Cls clsId) (Cls $ clsIdent actCls)
+            if accepted then
+                return ()
+            else
+                throwError $ privateFieldErr fieldId clsId
 
 getFieldType :: Ident -> Ident -> Eval Type
 getFieldType clsIdent fieldIdent = do
@@ -232,7 +250,9 @@ evalExprType (EMApp objIdent methodIdent arguments) = do
 evalExprType (EAcc objIdent fieldIdent) = do
     objType <- evalExprType (EVar objIdent)
     case objType of
-        Cls clsIdent -> getFieldType clsIdent fieldIdent
+        Cls clsIdent -> (do
+            checkPrivateField clsIdent fieldIdent
+            getFieldType clsIdent fieldIdent)
         t -> throwError $ unexpectedTypeErr t
 
 checkIfVarDeclared :: Ident -> Eval ()
@@ -636,8 +656,10 @@ checkFunction fun@(FnDef _ ident _ _) =
 
 checkCls :: Ident -> [Field] -> [FnDef] -> Eval [FnDef]
 checkCls clsIdent fields methods = do
+    Just cls <- getCls clsIdent
     env <- addFieldsToEnv fields
-    optimizedMethods <- local (\_ -> incBlockDepth env) (mapM checkFunction (map addSelfArg methods))
+    let env' = incBlockDepth $ env {actClass = Just cls}
+    optimizedMethods <- local (\_ -> env') (mapM checkFunction (map addSelfArg methods))
     return optimizedMethods
     where
         addSelfArg :: FnDef -> FnDef
