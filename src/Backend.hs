@@ -739,12 +739,12 @@ emitStmt (CondElse expr stmt1 stmt2) = do
                 (Just _, Just _) -> return ()
 emitStmt (While expr stmt) = do
     actBlockNum <- getActBlockNum
-    addNewLLVMBlock
+    loopBodyNum <- addNewLLVMBlock
     emitStmt stmt
-    loopBodyNum <- getActBlockNum
+    loopBodyEnd <- getActBlockNum
     loopCondNum <- addNewLLVMBlock
     setLastInstructionInBlock (Jump loopCondNum) actBlockNum
-    setLastInstructionInBlock (Jump loopCondNum) loopBodyNum
+    setLastInstructionInBlock (Jump loopCondNum) loopBodyEnd
     afterLoop <- addNewLLVMBlock
     emitCondExpr expr loopCondNum loopBodyNum afterLoop
     ask
