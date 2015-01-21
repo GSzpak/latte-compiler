@@ -44,11 +44,11 @@ Init.      Item ::= Ident "=" Expr ;
 
 separator nonempty Item "," ;
 
-Ass.       Stmt ::= Ident "=" Expr  ";" ;
+Ass.       Stmt ::= Expr "=" Expr  ";" ;
 
-Incr.      Stmt ::= Ident "++"  ";" ;
+Incr.      Stmt ::= Expr "++"  ";" ;
 
-Decr.      Stmt ::= Ident "--"  ";" ;
+Decr.      Stmt ::= Expr "--"  ";" ;
 
 Ret.       Stmt ::= "return" Expr ";" ;
 
@@ -103,6 +103,8 @@ ENew.      Expr6 ::= "new" Ident ;
 ENull.     Expr6 ::= "(" Ident ")" "null" ;
 
 EMApp.     Expr6 ::= Ident "." Ident "(" [Expr] ")" ;
+
+EAcc.      Expr6 ::= Ident "." Ident ;
 
 EVar.      Expr6 ::= Ident ;
 

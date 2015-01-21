@@ -34,9 +34,9 @@ data Stmt =
    Empty
  | BStmt Block
  | Decl Type [Item]
- | Ass Ident Expr
- | Incr Ident
- | Decr Ident
+ | Ass Expr Expr
+ | Incr Expr
+ | Decr Expr
  | Ret Expr
  | VRet
  | Cond Expr Stmt
@@ -72,6 +72,7 @@ data Expr =
  | ENew Ident
  | ENull Ident
  | EMApp Ident Ident [Expr]
+ | EAcc Ident Ident
  | EVar Ident
  | Neg Expr
  | Not Expr

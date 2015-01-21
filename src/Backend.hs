@@ -422,18 +422,22 @@ getClass ident = do
     return cls
 
 -- Assumes that field of given ident is declared in current class
+getClassField :: Ident -> ExpVal -> Eval (Registry, Type)
+getClassField fieldIdent objExpVal = do
+    let RegVal objReg = repr objExpVal
+    let Cls clsId = type_ objExpVal
+    cls <- getClass clsId
+    let Just index = Vector.findIndex (\f -> (getIdent f) == fieldIdent) (fields cls)
+    let field = (fields cls) Vector.! index
+    let ptrIndex = toInteger $ index + 1
+    resultReg <- getNextRegistry
+    addInstruction $ GetElementPtr resultReg (Cls clsId) objReg ptrIndex
+    return (resultReg, (getType field))
+
 getActClassField :: Ident -> Eval (Registry, Type)
 getActClassField fieldIdent = do
-    env <- ask
-    let Just actCls = actClass env
-    let Just index = Vector.findIndex (\f -> (getIdent f) == fieldIdent) (fields actCls)
-    let field = (fields actCls) Vector.! index
-    let ptrIndex = toInteger $ index + 1
     selfVal <- emitExpr (EVar selfIdent)
-    let RegVal objReg = repr selfVal
-    resultReg <- getNextRegistry
-    addInstruction $ GetElementPtr resultReg (getType actCls) objReg ptrIndex
-    return (resultReg, (getType field))
+    getClassField fieldIdent selfVal
 
 initFields :: LatteClass -> Registry -> Eval ()
 initFields cls reg = 
@@ -535,6 +539,12 @@ getIdentReg ident = do
         Nothing -> getActClassField ident
         Just (EnvElem reg t) -> return (reg, t)
 
+getExprReg :: Expr -> Eval (Registry, Type)
+getExprReg (EVar ident) = getIdentReg ident
+getExprReg (EAcc objIdent fieldIdent) = do
+    objVal <- emitExpr (EVar objIdent)
+    getClassField fieldIdent objVal
+
 emitExpr :: Expr -> Eval ExpVal
 emitExpr (ELitInt n) = return $ numExpVal n
 emitExpr ELitTrue = return $ boolExpVal True
@@ -581,21 +591,26 @@ emitExpr (EOr expr1 expr2) = do
     resultReg <- getNextRegistry
     addInstruction $ Phi resultReg Bool [(trueExpVal, actBlockNum1), (val2, actBlockNum2)]
     return $ ExpVal {repr = RegVal resultReg, type_ = Bool}
-emitExpr (EVar ident) = do
-    (reg, t) <- getIdentReg ident
+emitExpr expr@(EAcc objIdent fieldIdent) = do
+    (reg, t) <- getExprReg expr
     resultReg <- getNextRegistry
     addInstruction $ Load resultReg t reg
     return $ ExpVal {repr = RegVal resultReg, type_ = t}
-emitExpr (ENew ident) = do
-    cls <- getClass ident
+emitExpr expr@(EVar ident) = do
+    (reg, t) <- getExprReg expr
+    resultReg <- getNextRegistry
+    addInstruction $ Load resultReg t reg
+    return $ ExpVal {repr = RegVal resultReg, type_ = t}
+emitExpr (ENew clsId) = do
+    cls <- getClass clsId
     let size = getClassSize cls
     mallocResult <- getNextRegistry
     addInstruction $ Call mallocResult (Ptr $ Char) (globalName $ Ident "malloc") [numExpVal size]
     let mallocVal = ExpVal {repr = RegVal mallocResult, type_ = Ptr Char}
     objReg <- getNextRegistry
-    let pointerType = Cls ident
+    let pointerType = Cls clsId
     addInstruction $ Bitcast objReg mallocVal pointerType
-    let vtableVal = ExpVal {repr = RegVal (vtableName ident), type_ = (Ptr $ VtableType ident)}
+    let vtableVal = ExpVal {repr = RegVal (vtableName clsId), type_ = (Ptr $ VtableType clsId)}
     setVtable objReg pointerType vtableVal
     initFields cls objReg
     return ExpVal {repr = RegVal objReg, type_ = pointerType}
@@ -677,18 +692,17 @@ emitStmt Empty = ask
 emitStmt (BStmt block) = do
     emitBlock block
     ask
-emitStmt (Ass ident expr) = do
-    env <- ask
-    val <- emitExpr expr
-    (reg, actType) <- getIdentReg ident
+emitStmt (Ass expr1 expr2) = do
+    val <- emitExpr expr2
+    (reg, actType) <- getExprReg expr1
     castedVal <- castExpVal (actType, val)
     addInstruction $ StoreInstr castedVal reg
     ask
 emitStmt (Decl type_ items) = emitDeclarations type_ items
-emitStmt (Incr ident) =
-    emitStmt $ Ass ident (EAdd (EVar ident) Plus (ELitInt 1))
-emitStmt (Decr ident) =
-    emitStmt $ Ass ident (EAdd (EVar ident) Minus (ELitInt 1))
+emitStmt (Incr expr) =
+    emitStmt $ Ass expr (EAdd expr Plus (ELitInt 1))
+emitStmt (Decr expr) =
+    emitStmt $ Ass expr (EAdd expr Minus (ELitInt 1))
 emitStmt (Ret expr) = do
     val <- emitExpr expr
     setLastInstruction $ ExpRet val

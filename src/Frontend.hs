@@ -46,6 +46,42 @@ data Env = Env {
 
 type Eval a = ReaderT Env (ExceptT String IO) a
 
+---------------- errors ---------------------------------------------
+
+incomaptibleTypesErr :: Type -> Type -> String
+incomaptibleTypesErr expected actual =
+    printf "Incompatible types: expected %s, got %s" (printTree expected) (printTree actual)
+
+unexpectedTypeErr :: Type -> String
+unexpectedTypeErr t = printf "Unexpected type: %s" (printTree t)
+
+incompatibleParametersErr :: Ident -> [Type] -> [Type] -> String
+incompatibleParametersErr ident formal act = 
+    printf "Incompatible parameters for function %s: expected %s, got %s" (name ident) printFormal printAct
+    where
+        printFormal = show $ map printTree formal
+        printAct = show $ map printTree act
+
+undeclaredErr :: String -> Ident -> String
+undeclaredErr s ident = printf "Undeclared %s: %s" s (name ident)
+
+duplicatedErr :: String -> Ident -> String
+duplicatedErr s ident = printf "Duplicated %s declaration: %s" s (name ident)
+
+returnInVoidErr :: Expr -> String
+returnInVoidErr expr = printf "Returning expression: %s in a void function" (printTree expr)
+
+intRetTypeErr :: Type -> String
+intRetTypeErr t = printf "Invalid return type of \"main\" function: expected %s, got %s" (printTree Int) (printTree t)
+
+undeclaredClassComponentErr :: String -> Ident -> Ident -> String
+undeclaredClassComponentErr s componentIdent clsIdent = 
+    printf "Undeclared %s %s in class %s" s (name componentIdent) (name clsIdent)
+
+unexpectedExprErr :: Expr -> String
+unexpectedExprErr expr = printf "Unexpected expression: %s" (printTree expr)
+
+------------------------- utils --------------------------------------------
 
 runEval :: Env -> Eval a -> IO (Either String a)
 runEval env eval = runExceptT (runReaderT eval env)
@@ -104,37 +140,12 @@ getCls ident = do
     env <- ask
     return $ Map.lookup ident (classEnv env)
 
----------------- errors ---------------------------------------------
-
-incomaptibleTypesErr :: Type -> Type -> String
-incomaptibleTypesErr expected actual =
-    printf "Incompatible types: expected %s, got %s" (printTree expected) (printTree actual)
-
-unexpectedTypeErr :: Type -> String
-unexpectedTypeErr t = printf "Unexpected type: %s" (printTree t)
-
-incompatibleParametersErr :: Ident -> [Type] -> [Type] -> String
-incompatibleParametersErr ident formal act = 
-    printf "Incompatible parameters for function %s: expected %s, got %s" (name ident) printFormal printAct
-    where
-        printFormal = show $ map printTree formal
-        printAct = show $ map printTree act
-
-undeclaredErr :: String -> Ident -> String
-undeclaredErr s ident = printf "Undeclared %s: %s" s (name ident)
-
-duplicatedErr :: String -> Ident -> String
-duplicatedErr s ident = printf "Duplicated %s declaration: %s" s (name ident)
-
-returnInVoidErr :: Expr -> String
-returnInVoidErr expr = printf "Returning expression: %s in a void function" (printTree expr)
-
-intRetTypeErr :: Type -> String
-intRetTypeErr t = printf "Invalid return type of \"main\" function: expected %s, got %s" (printTree Int) (printTree t)
-
-undeclaredMethodErr :: Ident -> Ident -> String
-undeclaredMethodErr clsIdent methodIdent = 
-    printf "Undeclared method %s in class %s" (name methodIdent) (name clsIdent)
+getFieldType :: Ident -> Ident -> Eval Type
+getFieldType clsIdent fieldIdent = do
+    cls <- getExistingCls clsIdent
+    case Map.lookup fieldIdent (fields cls) of
+        Nothing -> throwError $ undeclaredClassComponentErr "field" fieldIdent clsIdent
+        Just t -> return t
 
 --------------------- expr types --------------------------------------------
 
@@ -215,9 +226,14 @@ evalExprType (EMApp objIdent methodIdent arguments) = do
         Cls clsIdent -> (do
             cls <- getExistingCls clsIdent
             case Map.lookup methodIdent (methods cls) of
-                    Nothing -> throwError $ undeclaredMethodErr clsIdent methodIdent
+                    Nothing -> throwError $ undeclaredClassComponentErr "method" methodIdent clsIdent
                     Just (Fun t argTypes) -> evalFunType methodIdent t argTypes arguments)
         _ -> throwError $ unexpectedTypeErr identType
+evalExprType (EAcc objIdent fieldIdent) = do
+    objType <- evalExprType (EVar objIdent)
+    case objType of
+        Cls clsIdent -> getFieldType clsIdent fieldIdent
+        t -> throwError $ unexpectedTypeErr t
 
 checkIfVarDeclared :: Ident -> Eval ()
 checkIfVarDeclared ident = do
@@ -259,18 +275,22 @@ checkStmt (Decl t items) = do
             checkIfVarDeclared ident
             checkExprType expr t
             local (declareVar ident t) (checkDeclaration items)
-checkStmt s@(Ass ident expr) = do 
-    identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
-    checkExprType expr identType
+checkStmt (Ass expr1@(EVar _) expr2) = do 
+    varType <- evalExprType expr1
+    valType <- evalExprType expr2
+    checkTypes valType varType
     ask
-checkStmt s@(Incr ident) = do
-    identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
-    checkTypes identType Int
+checkStmt (Ass expr1@(EAcc _ _) expr2) = do 
+    varType <- evalExprType expr1
+    valType <- evalExprType expr2
+    checkTypes valType varType
     ask
-checkStmt s@(Decr ident) = do
-    identType <- getIdentType ident varEnv (undeclaredErr "variable" ident)
-    checkTypes identType Int
+checkStmt (Ass expr _) = throwError $ unexpectedExprErr expr
+checkStmt (Incr expr) = do
+    exprType <- evalExprType expr
+    checkTypes exprType Int
     ask
+checkStmt (Decr expr) = checkStmt (Incr expr)
 checkStmt (Ret expr) = do
     env <- ask
     if actReturnType env == Void then
@@ -415,9 +435,9 @@ foldConstants (Decl t items) = do
         foldItem (Init ident expr) = do
             foldedExpr <- foldConstExpr expr
             return $ Init ident foldedExpr
-foldConstants (Ass ident expr) = do 
-    folded <- foldConstExpr expr
-    return $ Ass ident folded
+foldConstants (Ass expr1 expr2) = do 
+    folded <- foldConstExpr expr2
+    return $ Ass expr1 folded
 foldConstants (Ret expr) = do
     folded <- foldConstExpr expr
     return $ Ret folded
