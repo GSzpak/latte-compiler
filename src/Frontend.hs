@@ -516,6 +516,88 @@ optimizeBlock (Block stmts) = do
         Nothing -> Block optimized
         Just index -> Block $ take (index + 1) optimized
 
+------ Detecting and eliminating tail recursion ---------------------
+
+isRecursiveExprCall :: Ident -> Expr -> Eval Bool
+isRecursiveExprCall funIdent (EApp ident _) = return $ ident == funIdent
+isRecursiveExprCall funIdent (EMApp objIdent methodIdent _) = do
+    env <- ask
+    objType <- evalExprType (EVar objIdent)
+    let actCls = actClass env
+    case (objType, actCls) of
+        (ClsType clsId, Just cls) -> 
+            if clsId == (clsIdent cls) then
+                return $ (funIdent == methodIdent) && (objIdent == selfIdent)
+            else
+                return False
+        _ -> return False
+isRecursiveExprCall _ _ = return False
+
+isRecursiveCall :: Ident -> Stmt -> Eval Bool
+isRecursiveCall funIdent (BStmt block) = hasTailRecursion funIdent block
+isRecursiveCall funIdent (CondElse _ stmt1 stmt2) = do
+    is1 <- isRecursiveCall funIdent stmt1
+    is2 <- isRecursiveCall funIdent stmt2
+    return $ is1 && is2
+isRecursiveCall funIdent (Ret expr) = isRecursiveExprCall funIdent expr
+isRecursiveCall funIdent (SExp expr) = isRecursiveExprCall funIdent expr
+isRecursiveCall _ _ = return False
+
+hasTailRecursion :: Ident -> Block -> Eval Bool
+hasTailRecursion _ (Block []) = return False
+hasTailRecursion funIdent (Block stmts) = isRecursiveCall funIdent (last stmts)
+
+-- After checking, if recursive call exsits
+optimizeRecCallExpr :: [Ident] -> Expr -> [Stmt]
+optimizeRecCallExpr argIdents (EApp _ args) = 
+    map (\(argIdent, argExpr) -> (Ass (EVar argIdent) argExpr)) (zip argIdents args)
+optimizeRecCallExpr argIdents (EMApp _ _ args) =
+    map (\(argIdent, argExpr) -> Ass (EVar argIdent) argExpr) (zip argIdents args)
+
+optimizeRecCallStmt :: [Ident] -> Type -> Stmt -> [Stmt]
+optimizeRecCallStmt argIdents retType (BStmt block) =
+    [BStmt $ optimizeRecCall argIdents retType block]
+optimizeRecCallStmt argIdents retType (CondElse expr stmt1 stmt2) =
+    let
+        optimized1 = BStmt $ Block $ optimizeRecCallStmt argIdents retType stmt1
+        optimized2 = BStmt $ Block $ optimizeRecCallStmt argIdents retType stmt2
+    in
+        [CondElse expr optimized1 optimized2]
+optimizeRecCallStmt argIdents _ (Ret expr) = optimizeRecCallExpr argIdents expr
+optimizeRecCallStmt argIdents _ (SExp expr) = optimizeRecCallExpr argIdents expr
+
+separateDeclarations :: [Stmt] -> [Stmt] -> [Stmt] -> ([Stmt], [Stmt])
+separateDeclarations [] declAccu restAccu = (reverse declAccu, reverse restAccu)
+separateDeclarations ((decl@(Decl t items)):stmts) declAccu restAccu = 
+    let
+        (declarations, assignments) = separateDecl items [] []
+    in
+        separateDeclarations stmts ((Decl t declarations):declAccu) (assignments ++ restAccu)
+    where
+        separateDecl :: [Item] -> [Item] -> [Stmt] -> ([Item], [Stmt])
+        separateDecl [] declAccu stmtAccu = (declAccu, stmtAccu)
+        separateDecl ((noinit@(NoInit ident)):items) declAccu stmtAccu =
+            separateDecl items (noinit:declAccu) stmtAccu
+        separateDecl ((Init ident expr):items) declAccu stmtAccu =
+            separateDecl items ((NoInit ident):declAccu) ((Ass (EVar ident) expr):stmtAccu)
+separateDeclarations (stmt:stmts) declAccu restAccu =
+    separateDeclarations stmts declAccu (stmt:restAccu)
+
+optimizeRecCall :: [Ident] -> Type -> Block -> Block
+optimizeRecCall _ _ (Block []) = Block []
+optimizeRecCall argIdents retType (Block stmts) =
+    let
+        optimized = (init stmts) ++ (optimizeRecCallStmt argIdents retType (last stmts))
+        (declarations, statements) = separateDeclarations optimized [] []
+        retStmt = case retType of
+            Int -> Ret $ ELitInt 0
+            Bool -> Ret ELitFalse
+            Str -> Ret $ EString ""
+            Void -> VRet
+            ClsType clsId -> Ret $ ENull clsId
+    in 
+        Block $ declarations ++ [While ELitTrue (BStmt $ Block statements), retStmt]
+
 -------------------- Declarations -------------------------------------------
 
 declareBuiltIn :: Eval Env
@@ -616,25 +698,30 @@ checkIfClsDuplicated ident = do
         Nothing -> return ()
 
 checkFun :: FnDef -> Eval FnDef
-checkFun (FnDef t ident args block)  = do
-    env <- ask
+checkFun (FnDef retType ident args block)  = do
     let argTypes = map getType args
-    sequence_  $ map checkIfTypeDeclared (t:argTypes)
+    sequence_  $ map checkIfTypeDeclared (retType:argTypes)
     checkIfAnyVoid argTypes
     env <- declareArgs args
     let env' = prepareBlockCheck env
     local (\_ -> env') (checkBlock block)
     foldedConstantsBlock <- foldConstantsInBlock block
     let (Block optimized) = optimizeBlock foldedConstantsBlock
-    if (t /= Void) && (not (any hasReturn optimized)) then
+    if (retType /= Void) && (not (any hasReturn optimized)) then
         throwError $ "No \"return\" instruction"
-    else
-        return $ FnDef t ident args (Block optimized)
+    else do
+        hasRecCall <- local (\_ -> env') (hasTailRecursion ident (Block optimized))
+        if hasRecCall then do
+            let argIdents = map (\(Arg _ id) -> id) args
+            let withoutTailRecBlock = optimizeRecCall argIdents retType (Block optimized)
+            return $ FnDef retType ident args withoutTailRecBlock
+        else
+            return $ FnDef retType ident args (Block optimized)
     where
         prepareBlockCheck :: Env -> Env
         prepareBlockCheck env = env {
             actBlockDepth = (actBlockDepth env) + 1,
-            actReturnType = t
+            actReturnType = retType
         }
         declareArgs :: [Arg] -> Eval Env
         declareArgs [] = ask
