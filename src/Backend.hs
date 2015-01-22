@@ -12,6 +12,8 @@ import Text.Printf
 import Utils
 
 
+---------------------- Types -------------------------------------------------
+
 type Name = String
 type Registry = Name
 type Counter = Integer
@@ -93,7 +95,7 @@ data Instruction =
     FunDecl Name Type [Type] |
     Bitcast Registry ExpVal Type
 
---- printing utils -------------------------------------
+----------------- Printing utils ---------------------------------------------
 
 identReg :: Ident -> Registry
 identReg (Ident name) = '%':name
@@ -262,7 +264,7 @@ showLLVMArgs args = printWithSeparator (map showLLVMArg args) ","
         showLLVMArg :: Arg -> String
         showLLVMArg (Arg type_ ident) = printf "%s %s" (showLLVMType type_) (identReg ident)
 
------------------------- utils ----------------------------------------------
+-------------------- Utils ---------------------------------------------------
 
 instance Typeable LatteClass where
     getType cls = ClsType (clsIdent cls)
@@ -393,10 +395,52 @@ addNewLLVMBlock = do
     }
     return next
 
+addCompiled :: [String] -> Eval ()
+addCompiled compiledInstructions =  do
+    store <- get
+    put $ store {compiled = compiledInstructions ++ (compiled store)}
+
+reverseInstructions :: Eval ()
+reverseInstructions = do
+    store <- get
+    put $ store {compiled = reverse (compiled store)}
+ 
+compileBlock :: LLVMBlock -> [String]
+compileBlock block = ["", formatInstr $ lastInstruction] ++ (map formatInstr (instructions block))
+    where
+        Just lastInstruction = lastInstr block
+        formatInstr :: Instruction -> String
+        formatInstr instr = printf "      %s" (show instr)
+
+compileBlocksInstructions :: Eval ()
+compileBlocksInstructions = do
+    store <- get
+    sequence_ $ map compileBlockWithLabel (map addMissingRet (Map.toList $ blocks store))
+    store' <- get
+    put $ store' {blocks = Map.empty}
+    where
+        -- return from void function
+        addMissingRet :: (BlockNum, LLVMBlock) -> (BlockNum, LLVMBlock)
+        addMissingRet (labelNum, block) = case (lastInstr block) of
+            Just _ -> (labelNum, block)
+            Nothing -> (labelNum, updated)
+            where
+                updated = LLVMBlock {
+                    labelNum = labelNum,
+                    instructions = instructions block,
+                    lastInstr = Just VoidRet
+                }
+        compileBlockWithLabel :: (BlockNum, LLVMBlock) -> Eval ()
+        compileBlockWithLabel (labelNum, block) = do
+            addCompiled [formatLabel labelNum]
+            addCompiled $ compileBlock block
+        formatLabel :: BlockNum -> String
+        formatLabel labelNum = printf "   %s:" (label labelNum)
+
 debug :: Show a => a -> Eval ()
 debug x = liftIO $ putStrLn $ show x
 
-------------------- class utils -------------------------------------------
+-------------------- Class utils ---------------------------------------------
 
 vtableIndex :: Integer
 vtableIndex = 0
@@ -476,7 +520,7 @@ getVtableElem cls method =
     in
         (toInteger index, (vtable cls) Vector.! index)
 
--------------- expressions ------------------------------------
+------------------- Expressions ----------------------------------------------
 
 getStringName :: String -> Eval Name
 getStringName s = do
@@ -650,7 +694,7 @@ emitExpr expr = do
     t <- emitExprInstruction expr result
     return $ ExpVal {repr = RegVal result, type_ = t}
 
------------ statements ------------------------------------------------
+------------------ Statements ------------------------------------------------
 
 declare :: Ident -> Type -> ExpVal -> Eval Environment
 declare ident actType val = do
@@ -780,49 +824,7 @@ emitBlock :: Block -> Eval Environment
 emitBlock (Block stmts) = do
     emitStmts stmts
 
----------------------- declarations, compiling instructions ---------------
-
-addCompiled :: [String] -> Eval ()
-addCompiled compiledInstructions =  do
-    store <- get
-    put $ store {compiled = compiledInstructions ++ (compiled store)}
-
-reverseInstructions :: Eval ()
-reverseInstructions = do
-    store <- get
-    put $ store {compiled = reverse (compiled store)}
- 
-compileBlock :: LLVMBlock -> [String]
-compileBlock block = ["", formatInstr $ lastInstruction] ++ (map formatInstr (instructions block))
-    where
-        Just lastInstruction = lastInstr block
-        formatInstr :: Instruction -> String
-        formatInstr instr = printf "      %s" (show instr)
-
-compileBlocksInstructions :: Eval ()
-compileBlocksInstructions = do
-    store <- get
-    sequence_ $ map compileBlockWithLabel (map addMissingRet (Map.toList $ blocks store))
-    store' <- get
-    put $ store' {blocks = Map.empty}
-    where
-        -- return from void function
-        addMissingRet :: (BlockNum, LLVMBlock) -> (BlockNum, LLVMBlock)
-        addMissingRet (labelNum, block) = case (lastInstr block) of
-            Just _ -> (labelNum, block)
-            Nothing -> (labelNum, updated)
-            where
-                updated = LLVMBlock {
-                    labelNum = labelNum,
-                    instructions = instructions block,
-                    lastInstr = Just VoidRet
-                }
-        compileBlockWithLabel :: (BlockNum, LLVMBlock) -> Eval ()
-        compileBlockWithLabel (labelNum, block) = do
-            addCompiled [formatLabel labelNum]
-            addCompiled $ compileBlock block
-        formatLabel :: BlockNum -> String
-        formatLabel labelNum = printf "   %s:" (label labelNum)
+----------------- Functions, classes -----------------------------------------
 
 emitFun :: FnDef -> Eval ()
 emitFun (FnDef retType ident args block) = do

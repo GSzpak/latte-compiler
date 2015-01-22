@@ -12,6 +12,8 @@ import Text.Printf
 import Utils
 
 
+--------------------- Types --------------------------------------------------
+
 type BlockDepth = Integer
 
 type EnvElem = Type
@@ -47,7 +49,7 @@ data Env = Env {
 
 type Eval a = ReaderT Env (ExceptT String IO) a
 
----------------- errors ---------------------------------------------
+---------------- Errors ------------------------------------------------------
 
 incomaptibleTypesErr :: Type -> Type -> String
 incomaptibleTypesErr expected actual =
@@ -86,7 +88,7 @@ privateFieldErr :: Ident -> Ident -> String
 privateFieldErr fieldId clsId =
     printf "Attempt to access private field: %s in class: %s" (name fieldId) (name clsId)
 
-------------------------- utils --------------------------------------------
+------------------- Utils ----------------------------------------------------
 
 runEval :: Env -> Eval a -> IO (Either String a)
 runEval env eval = runExceptT (runReaderT eval env)
@@ -165,7 +167,7 @@ getFieldType clsIdent fieldIdent = do
         Nothing -> throwError $ undeclaredClassComponentErr "field" fieldIdent clsIdent
         Just t -> return t
 
---------------------- expr types --------------------------------------------
+---------------- Expressions -------------------------------------------------
 
 getIdentType :: Typeable a => Ident -> (Env -> TypeEnv a) -> String -> Eval Type
 getIdentType ident envSelector errMessage = do
@@ -254,6 +256,8 @@ evalExprType (EAcc objIdent fieldIdent) = do
             checkPrivateField clsIdent fieldIdent
             getFieldType clsIdent fieldIdent)
         t -> throwError $ unexpectedTypeErr t
+
+------------------ Statements ------------------------------------------------
 
 checkIfVarDeclared :: Ident -> Eval ()
 checkIfVarDeclared ident = do
@@ -351,9 +355,9 @@ checkStatements (stmt:statements) = do
 checkBlock :: Block -> Eval Env
 checkBlock (Block statements) = checkStatements statements
 
------------------ Constants folding ---------------------------------------
+----------------- Constant folding -------------------------------------------
 
--- Expressions folding is run after type checking
+-- Folding is run after type checking
 
 isConstant :: Expr -> Bool
 isConstant (ELitInt _) = True
@@ -484,7 +488,7 @@ foldConstantsInBlock (Block stmts) = do
     folded <- mapM foldConstants stmts
     return $ Block folded
 
----------------------------- Statements optimizations -------------------------
+------------- Statements optimizations ---------------------------------------
 
 optimizeStmt :: Stmt -> Stmt
 optimizeStmt (BStmt block) = BStmt $ optimizeBlock block
@@ -516,7 +520,7 @@ optimizeBlock (Block stmts) = do
         Nothing -> Block optimized
         Just index -> Block $ take (index + 1) optimized
 
------- Detecting and eliminating tail recursion ---------------------
+--------- Detecting and eliminating tail recursion ---------------------------
 
 isRecursiveExprCall :: Ident -> Expr -> Eval Bool
 isRecursiveExprCall funIdent (EApp ident _) = return $ ident == funIdent
@@ -598,7 +602,7 @@ optimizeRecCall argIdents retType (Block stmts) =
     in 
         Block $ declarations ++ [While ELitTrue (BStmt $ Block statements), retStmt]
 
--------------------- Declarations -------------------------------------------
+------------------ Declarations ----------------------------------------------
 
 declareBuiltIn :: Eval Env
 declareBuiltIn =
@@ -667,7 +671,7 @@ declareTopDefs ((ClsExtDef ident ancestorId fields methods):defs) = do
     env' <- declareClass ident (Just ancestor) fields methods
     local (\_ -> env') (declareTopDefs defs)
 
---------------------------- Checking correctness ---------------------------
+-------------- Correctness checking ------------------------------------------
 
 -- Checked after deleting unreachable code
 hasReturn :: Stmt -> Bool
